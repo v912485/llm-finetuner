@@ -324,12 +324,36 @@ def start_training():
 def get_training_status():
     return jsonify(training_status)
 
-# Add CUDA check and logging at startup
-CUDA_AVAILABLE = torch.cuda.is_available()
-if CUDA_AVAILABLE:
-    logger.info(f"CUDA is available. Using GPU: {torch.cuda.get_device_name(0)}")
+# Update the CUDA check at the top of app.py
+def get_device_info():
+    if torch.cuda.is_available():
+        return {
+            'type': 'cuda',
+            'name': torch.cuda.get_device_name(0),
+            'backend': 'CUDA'
+        }
+    elif hasattr(torch, 'hip') and torch.hip.is_available():
+        return {
+            'type': 'cuda',  # ROCm uses CUDA API
+            'name': 'AMD GPU',
+            'backend': 'ROCm'
+        }
+    else:
+        return {
+            'type': 'cpu',
+            'name': 'CPU',
+            'backend': 'CPU'
+        }
+
+# Initialize device info
+DEVICE_INFO = get_device_info()
+ACCELERATOR_AVAILABLE = DEVICE_INFO['type'] == 'cuda'
+
+# Update logging at startup
+if ACCELERATOR_AVAILABLE:
+    logger.info(f"Using {DEVICE_INFO['backend']} on {DEVICE_INFO['name']}")
 else:
-    logger.warning("CUDA is not available. Using CPU for training.")
+    logger.warning("No GPU acceleration available. Using CPU for training.")
 
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased from 4
 MAX_LENGTH = 128  # Reduced from 256
@@ -342,8 +366,8 @@ def run_training(config):
         logger.info(f"Starting training with config: {config}")
         
         # Set up device
-        device = torch.device('cuda' if CUDA_AVAILABLE else 'cpu')
-        logger.info(f"Using device: {device}")
+        device = torch.device(DEVICE_INFO['type'])
+        logger.info(f"Training on {DEVICE_INFO['name']} using {DEVICE_INFO['backend']}")
         
         # Load model and tokenizer first
         model_id = config['model_id']
@@ -356,7 +380,7 @@ def run_training(config):
         # Load model and tokenizer
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            device_map='auto' if CUDA_AVAILABLE else None,
+            device_map='auto' if ACCELERATOR_AVAILABLE else None,
             torch_dtype=torch.float32,
             low_cpu_mem_usage=True,
         )
@@ -372,7 +396,7 @@ def run_training(config):
         model.config.use_cache = False
         
         # Move model to device if not using auto device mapping
-        if not CUDA_AVAILABLE:
+        if not ACCELERATOR_AVAILABLE:
             model = model.to(device)
 
         # Define CustomDataset class inside the function
@@ -438,11 +462,11 @@ def run_training(config):
             'model_id': config['model_id'],
             'dataset_info': config['datasets'],
             'learning_rate': config['learningRate'],
-            'device': 'GPU' if CUDA_AVAILABLE else 'CPU'
+            'device': 'GPU' if ACCELERATOR_AVAILABLE else 'CPU'
         })
         
         # Initialize mixed precision training
-        scaler = torch.amp.GradScaler('cuda') if CUDA_AVAILABLE else None
+        scaler = torch.amp.GradScaler('cuda') if ACCELERATOR_AVAILABLE else None
         
         # Setup optimizer with gradient accumulation
         optimizer = AdamW(
@@ -482,7 +506,7 @@ def run_training(config):
                     attention_mask = batch['attention_mask'].to(device, non_blocking=True)
 
                     # Use gradient scaling with autocast
-                    if CUDA_AVAILABLE:
+                    if ACCELERATOR_AVAILABLE:
                         with autocast():
                             outputs = model(
                                 input_ids=input_ids,
@@ -519,7 +543,7 @@ def run_training(config):
                             current_step += 1
 
                     # Clear cache more aggressively
-                    if CUDA_AVAILABLE:
+                    if ACCELERATOR_AVAILABLE:
                         torch.cuda.empty_cache()
                         if batch_idx % 5 == 0:  # Every 5 batches
                             torch.cuda.synchronize()
@@ -534,12 +558,12 @@ def run_training(config):
                             'current_step': current_step,
                             'total_steps': total_steps,
                             'loss': loss.item() * GRADIENT_ACCUMULATION_STEPS,
-                            'gpu_memory': f"{torch.cuda.memory_allocated() / 1024**2:.1f}MB" if CUDA_AVAILABLE else "N/A"
+                            'gpu_memory': f"{torch.cuda.memory_allocated() / 1024**2:.1f}MB" if ACCELERATOR_AVAILABLE else "N/A"
                         })
 
                 except RuntimeError as e:
                     if "out of memory" in str(e):
-                        if CUDA_AVAILABLE:
+                        if ACCELERATOR_AVAILABLE:
                             torch.cuda.empty_cache()
                         logger.error(f"GPU OOM error at batch {batch_idx}. Skipping batch.")
                         continue
@@ -599,7 +623,7 @@ def run_training(config):
             'is_training': False,
             'end_time': datetime.now().isoformat()
         })
-        if CUDA_AVAILABLE:
+        if ACCELERATOR_AVAILABLE:
             torch.cuda.empty_cache()
 
 @app.route('/api/models/downloaded', methods=['GET'])
@@ -681,14 +705,14 @@ def model_inference():
         
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
-            device_map='auto' if CUDA_AVAILABLE else None,
+            device_map='auto' if ACCELERATOR_AVAILABLE else None,
             torch_dtype=torch.float32
         )
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         
         # Generate response
         inputs = tokenizer(message, return_tensors="pt")
-        if CUDA_AVAILABLE:
+        if ACCELERATOR_AVAILABLE:
             inputs = {k: v.cuda() for k, v in inputs.items()}
         
         outputs = model.generate(

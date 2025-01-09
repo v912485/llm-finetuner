@@ -7,7 +7,11 @@
       "description": "117M parameters",
       "requirements": {
         "min_gpu_memory": "4GB",
-        "recommended_batch_size": 4
+        "recommended_batch_size": {
+          "cuda": 4,
+          "rocm": 4,
+          "cpu": 1
+        }
       }
     },
     {
@@ -17,7 +21,11 @@
       "description": "345M parameters",
       "requirements": {
         "min_gpu_memory": "8GB",
-        "recommended_batch_size": 2
+        "recommended_batch_size": {
+          "cuda": 2,
+          "rocm": 2,
+          "cpu": 1
+        }
       }
     },
     {
@@ -27,8 +35,17 @@
       "description": "350M parameters",
       "requirements": {
         "min_gpu_memory": "8GB",
-        "recommended_batch_size": 2
+        "recommended_batch_size": {
+          "cuda": 2,
+          "rocm": 2,
+          "cpu": 1
+        }
       }
     }
-  ]
+  ],
+  "supported_backends": {
+    "cuda": "NVIDIA CUDA",
+    "rocm": "AMD ROCm",
+    "cpu": "CPU Only"
+  }
 } 
