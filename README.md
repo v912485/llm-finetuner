@@ -21,7 +21,10 @@ A web application for fine-tuning Large Language Models (LLMs) through an intuit
 - Node.js 14 or higher
 - npm 6 or higher
 - Sufficient disk space for model storage
-- CUDA-capable GPU (recommended for training)
+- GPU acceleration (one of the following):
+  - NVIDIA GPU with CUDA support
+  - AMD GPU with ROCm support (Linux only)
+  - CPU-only (significantly slower)
 - Minimum 8GB GPU memory for medium-sized models
 
 ## Installation
@@ -35,14 +38,65 @@ cd llm-finetuner
 2. Set up the backend:
 ```bash
 cd backend
-pip install flask flask-cors torch transformers tqdm scikit-learn
+
+# Create and activate virtual environment
+# On Linux/Mac:
+python -m venv venv
+source venv/bin/activate
+
+# On Windows:
+python -m venv venv
+.\venv\Scripts\activate
+
+# Install backend dependencies based on your GPU:
+
+## For NVIDIA GPU:
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+
+## For AMD GPU (ROCm, Linux only):
+# First install ROCm following instructions at: https://rocm.docs.amd.com/en/latest/deploy/linux/quick_start.html
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.6
+
+## For CPU only:
+pip install torch torchvision torchaudio
+
+# Install other backend requirements
+pip install flask flask-cors transformers tqdm scikit-learn
 ```
 
 3. Set up the frontend:
 ```bash
-cd frontend
+cd ../frontend
 npm install
 ```
+
+### Development Tips
+
+- Always activate the virtual environment before running the backend:
+  ```bash
+  cd backend
+  
+  # On Linux/Mac:
+  source venv/bin/activate
+  
+  # On Windows:
+  .\venv\Scripts\activate
+  ```
+
+- To deactivate the virtual environment when you're done:
+  ```bash
+  deactivate
+  ```
+
+- To save your environment requirements:
+  ```bash
+  pip freeze > requirements.txt
+  ```
+
+- To install from requirements.txt:
+  ```bash
+  pip install -r requirements.txt
+  ```
 
 ## Configuration
 
