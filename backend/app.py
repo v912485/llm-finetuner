@@ -341,21 +341,20 @@ def get_training_status():
 
 # Update the CUDA check at the top of app.py
 def get_device_info():
-    if torch.cuda.is_available():
-        if torch.version.hip is not None:  # Check for ROCm/HIP
-            return {
-                'type': 'cuda',  # ROCm uses CUDA API
-                'name': 'AMD GPU',
-                'backend': 'ROCm',
-                'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB"
-            }
-        else:
-            return {
-                'type': 'cuda',
-                'name': torch.cuda.get_device_name(0),
-                'backend': 'CUDA',
-                'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB"
-            }
+    if hasattr(torch.version, 'hip') and torch.version.hip is not None:  # ROCm check
+        return {
+            'type': 'cuda',  # ROCm uses CUDA API
+            'name': 'AMD GPU',
+            'backend': 'ROCm',
+            'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB"
+        }
+    elif torch.cuda.is_available():  # CUDA check
+        return {
+            'type': 'cuda',
+            'name': torch.cuda.get_device_name(0),
+            'backend': 'CUDA',
+            'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB"
+        }
     else:
         return {
             'type': 'cpu',
