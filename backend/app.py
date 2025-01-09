@@ -461,7 +461,7 @@ def run_training(config):
             model = AutoModelForCausalLM.from_pretrained(
                 model_path,
                 device_map=None,  # Disable auto device mapping to prevent splitting
-                torch_dtype=torch.float32 if is_rocm else torch.float16,
+                torch_dtype=torch.float32,  # Use float32 for all backends
                 low_cpu_mem_usage=True,
                 quantization_config=model_config.get('bnb_config') if use_qlora and not is_rocm else None,
                 return_dict=True
@@ -619,34 +619,37 @@ def run_training(config):
                     # Move batch to device
                     batch = {k: v.to(device) for k, v in batch.items()}
                     
-                    outputs = model(
-                        input_ids=batch['input_ids'],
-                        attention_mask=batch['attention_mask'],
-                        labels=batch['input_ids']
-                    )
-                    loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
-                    
-                    # Scale loss and backward pass
-                    if ACCELERATOR_AVAILABLE:
-                        if is_rocm:
-                            loss.backward()
-                        else:
-                            with autocast():
-                                scaler.scale(loss).backward()
+                    if ACCELERATOR_AVAILABLE and not is_rocm:
+                        # CUDA path without mixed precision
+                        outputs = model(
+                            input_ids=batch['input_ids'],
+                            attention_mask=batch['attention_mask'],
+                            labels=batch['input_ids']
+                        )
+                        loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
+                        
+                        # Handle gradient scaling outside autocast
+                        scaler.scale(loss).backward()
                         
                         if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
-                            if not is_rocm:
-                                scaler.unscale_(optimizer)
+                            # Unscale gradients and clip
+                            scaler.unscale_(optimizer)
                             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                            if is_rocm:
-                                optimizer.step()
-                            else:
-                                scaler.step(optimizer)
-                                scaler.update()
+                            
+                            # Step optimizer and scaler
+                            scaler.step(optimizer)
+                            scaler.update()
                             optimizer.zero_grad()
                             scheduler.step()
                             current_step += 1
                     else:
+                        # ROCm/CPU path without mixed precision
+                        outputs = model(
+                            input_ids=batch['input_ids'],
+                            attention_mask=batch['attention_mask'],
+                            labels=batch['input_ids']
+                        )
+                        loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
                         loss.backward()
                         
                         if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
