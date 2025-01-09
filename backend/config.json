@@ -1,0 +1,34 @@
+{
+  "models": [
+    {
+      "id": "gpt2",
+      "name": "GPT-2",
+      "size": "small",
+      "description": "117M parameters",
+      "requirements": {
+        "min_gpu_memory": "4GB",
+        "recommended_batch_size": 4
+      }
+    },
+    {
+      "id": "gpt2-medium",
+      "name": "GPT-2 Medium",
+      "size": "medium",
+      "description": "345M parameters",
+      "requirements": {
+        "min_gpu_memory": "8GB",
+        "recommended_batch_size": 2
+      }
+    },
+    {
+      "id": "facebook/opt-350m",
+      "name": "OPT 350M",
+      "size": "medium",
+      "description": "350M parameters",
+      "requirements": {
+        "min_gpu_memory": "8GB",
+        "recommended_batch_size": 2
+      }
+    }
+  ]
+} 
