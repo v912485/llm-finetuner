@@ -432,8 +432,17 @@ def run_training(config):
         start_time = datetime.now()
         logger.info(f"Starting training with config: {config}")
         
-        # Set up device
-        device = torch.device(DEVICE_INFO['type'])
+        # Set up device and check for ROCm
+        is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+        
+        # Force using only the first GPU
+        if torch.cuda.is_available():
+            torch.cuda.set_device(0)  # Explicitly set to first GPU
+            device = torch.device('cuda:0')
+            logger.info(f"Forcing use of GPU 0: {torch.cuda.get_device_name(0)}")
+        else:
+            device = torch.device('cpu')
+        
         logger.info(f"Training on {DEVICE_INFO['name']} using {DEVICE_INFO['backend']}")
         
         # Load model and tokenizer first
@@ -447,41 +456,62 @@ def run_training(config):
         use_qlora = config.get('use_qlora', False)
         model_config = get_model_config(model_id, use_qlora)
         
-        # Load model with appropriate configuration
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            device_map='auto' if ACCELERATOR_AVAILABLE else None,
-            torch_dtype=torch.float32,
-            low_cpu_mem_usage=True,
-            quantization_config=model_config.get('bnb_config') if use_qlora else None,
-            return_dict=True
-        )
+        try:
+            # First try loading with optimal settings
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map=None,  # Disable auto device mapping to prevent splitting
+                torch_dtype=torch.float32 if is_rocm else torch.float16,
+                low_cpu_mem_usage=True,
+                quantization_config=model_config.get('bnb_config') if use_qlora and not is_rocm else None,
+                return_dict=True
+            )
+            # Explicitly move model to device
+            model = model.to(device)
+        except RuntimeError as e:
+            if is_rocm and ("HIPBLAS" in str(e) or "ROCm" in str(e)):
+                logger.warning("ROCm optimization failed, falling back to basic configuration")
+                # Fallback configuration for ROCm
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    device_map=None,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=True,
+                    return_dict=True
+                )
+                model = model.to(device)
+                use_qlora = False
+            else:
+                raise e
         
         # Enable gradients for all parameters
         for param in model.parameters():
             param.requires_grad = True
 
-        if use_qlora:
+        if use_qlora and not is_rocm:
             model = prepare_model_for_kbit_training(model)
 
         # Add LoRA adapter
-        if config.get('trainingMethod') in ['lora', 'qlora']:
+        if config.get('trainingMethod') in ['lora', 'qlora'] and not is_rocm:
             model = get_peft_model(model, model_config['lora_config'])
             model.print_trainable_parameters()  # Debug info
         
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         
         # Enable gradient checkpointing after model creation
-        if hasattr(model, 'gradient_checkpointing_enable'):
-            model.gradient_checkpointing_enable()
-        elif hasattr(model, 'enable_gradient_checkpointing'):
-            model.enable_gradient_checkpointing()
+        try:
+            if hasattr(model, 'gradient_checkpointing_enable'):
+                model.gradient_checkpointing_enable()
+            elif hasattr(model, 'enable_gradient_checkpointing'):
+                model.enable_gradient_checkpointing()
+        except Exception as e:
+            logger.warning(f"Could not enable gradient checkpointing: {str(e)}")
 
         # Disable generation caching for training
         model.config.use_cache = False
         
         # Move model to device if not using auto device mapping
-        if not ACCELERATOR_AVAILABLE:
+        if not ACCELERATOR_AVAILABLE or is_rocm:
             model = model.to(device)
 
         # Define CustomDataset class inside the function
@@ -529,7 +559,7 @@ def run_training(config):
             train_dataset,
             batch_size=BATCH_SIZE,
             shuffle=True,
-            pin_memory=ACCELERATOR_AVAILABLE  # Only pin if GPU is available
+            pin_memory=True
         )
         
         val_dataloader = DataLoader(
@@ -547,18 +577,18 @@ def run_training(config):
             'model_id': config['model_id'],
             'dataset_info': config['datasets'],
             'learning_rate': config['learningRate'],
-            'device': 'GPU' if ACCELERATOR_AVAILABLE else 'CPU'
+            'device': f"GPU ({torch.cuda.get_device_name(0)})" if torch.cuda.is_available() else 'CPU'
         })
         
         # Initialize mixed precision training
-        scaler = torch.amp.GradScaler('cuda') if ACCELERATOR_AVAILABLE else None
+        scaler = torch.amp.GradScaler() if (ACCELERATOR_AVAILABLE and not is_rocm) else None
         
         # Setup optimizer with gradient accumulation
         optimizer = AdamW(
             model.parameters(),
             lr=config.get('learningRate', 0.0001),
             eps=1e-8,
-            weight_decay=0.01  # Add weight decay for better regularization
+            weight_decay=0.01
         )
         
         num_epochs = config.get('epochs', 3)
@@ -573,7 +603,7 @@ def run_training(config):
         # Training loop with gradient accumulation
         model.train()
         current_step = 0
-        optimizer.zero_grad()  # Zero gradients at start
+        optimizer.zero_grad()
         
         for epoch in range(num_epochs):
             model.train()
@@ -586,7 +616,9 @@ def run_training(config):
                     return
 
                 try:
-                    # No need to move tensors to device since they're already there
+                    # Move batch to device
+                    batch = {k: v.to(device) for k, v in batch.items()}
+                    
                     outputs = model(
                         input_ids=batch['input_ids'],
                         attention_mask=batch['attention_mask'],
@@ -596,14 +628,21 @@ def run_training(config):
                     
                     # Scale loss and backward pass
                     if ACCELERATOR_AVAILABLE:
-                        with autocast():
-                            scaler.scale(loss).backward()
+                        if is_rocm:
+                            loss.backward()
+                        else:
+                            with autocast():
+                                scaler.scale(loss).backward()
                         
                         if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
-                            scaler.unscale_(optimizer)
+                            if not is_rocm:
+                                scaler.unscale_(optimizer)
                             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                            scaler.step(optimizer)
-                            scaler.update()
+                            if is_rocm:
+                                optimizer.step()
+                            else:
+                                scaler.step(optimizer)
+                                scaler.update()
                             optimizer.zero_grad()
                             scheduler.step()
                             current_step += 1
@@ -621,7 +660,8 @@ def run_training(config):
                     if ACCELERATOR_AVAILABLE:
                         torch.cuda.empty_cache()
                         if batch_idx % 5 == 0:  # Every 5 batches
-                            torch.cuda.synchronize()
+                            if is_rocm:
+                                torch.cuda.synchronize()  # ROCm synchronization
 
                     # Log progress
                     if batch_idx % (10 * GRADIENT_ACCUMULATION_STEPS) == 0:
@@ -662,13 +702,13 @@ def run_training(config):
             val_loss = 0
             with torch.no_grad():
                 for batch in val_dataloader:
-                    input_ids = batch['input_ids'].to(device)
-                    attention_mask = batch['attention_mask'].to(device)
+                    # Move validation batch to same device
+                    batch = {k: v.to(device) for k, v in batch.items()}
                     
                     outputs = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
-                        labels=input_ids
+                        input_ids=batch['input_ids'],
+                        attention_mask=batch['attention_mask'],
+                        labels=batch['input_ids']
                     )
                     val_loss += outputs.loss.item()
             
@@ -770,6 +810,17 @@ def model_inference():
         }), 400
     
     try:
+        # Set up device and check for ROCm
+        is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+        
+        # Force using only the first GPU
+        if torch.cuda.is_available():
+            torch.cuda.set_device(0)  # Explicitly set to first GPU
+            device = torch.device('cuda:0')
+            logger.info(f"Inference using GPU 0: {torch.cuda.get_device_name(0)}")
+        else:
+            device = torch.device('cpu')
+            
         # Load model and tokenizer
         safe_dir_name = model_id.replace('/', '_')
         model_path = os.path.join(MODELS_DIR, safe_dir_name)
@@ -787,27 +838,58 @@ def model_inference():
             latest_version = sorted(finetuned_versions)[-1]
             model_path = os.path.join(model_path, latest_version)
         
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            device_map='auto' if ACCELERATOR_AVAILABLE else None,
-            torch_dtype=torch.float32
-        )
+        try:
+            # First try loading with optimal settings
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map=None,  # Disable auto device mapping
+                torch_dtype=torch.float32 if is_rocm else torch.float16,
+                low_cpu_mem_usage=True
+            )
+            model = model.to(device)
+        except RuntimeError as e:
+            if is_rocm and ("HIPBLAS" in str(e) or "ROCm" in str(e)):
+                logger.warning("ROCm optimization failed, falling back to basic configuration")
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    device_map=None,
+                    torch_dtype=torch.float32,
+                    low_cpu_mem_usage=True
+                )
+                model = model.to(device)
+            else:
+                raise e
+                
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         
-        # Generate response
-        inputs = tokenizer(message, return_tensors="pt")
-        if ACCELERATOR_AVAILABLE:
-            inputs = {k: v.cuda() for k, v in inputs.items()}
+        # Generate response with fixed parameters
+        inputs = tokenizer(message, return_tensors="pt").to(device)
         
-        outputs = model.generate(
-            **inputs,
-            max_length=100,
-            num_return_sequences=1,
-            temperature=0.7,
-            pad_token_id=tokenizer.eos_token_id
-        )
+        # Set generation parameters
+        generation_config = {
+            "max_length": 100,
+            "num_return_sequences": 1,
+            "do_sample": True,  # Enable sampling
+            "temperature": 0.7,
+            "top_p": 0.9,  # Add top_p for better text quality
+            "pad_token_id": tokenizer.eos_token_id
+        }
+        
+        # Clear CUDA cache before generation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                **generation_config
+            )
         
         response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+        
+        # Clear CUDA cache after generation
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         return jsonify({
             "status": "success",
@@ -815,9 +897,13 @@ def model_inference():
         })
         
     except Exception as e:
+        error_message = str(e)
+        logger.error(f"Inference error: {error_message}")
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         return jsonify({
             "status": "error",
-            "message": str(e)
+            "message": f"Failed to generate response: {error_message}"
         }), 500
 
 @app.route('/api/datasets/downloaded', methods=['GET'])
