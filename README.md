@@ -7,9 +7,13 @@ A web application for fine-tuning Large Language Models (LLMs) through an intuit
 - Select and download pre-trained language models
 - Upload and prepare training datasets
 - Configure fine-tuning parameters
+- Real-time training progress monitoring
+- Validation dataset splitting
+- Model inference through chat interface
 - Browser-based user interface
-- Real-time download progress tracking
+- Real-time progress tracking
 - Error handling and feedback
+- Configurable model selection
 
 ## Prerequisites
 
@@ -18,19 +22,20 @@ A web application for fine-tuning Large Language Models (LLMs) through an intuit
 - npm 6 or higher
 - Sufficient disk space for model storage
 - CUDA-capable GPU (recommended for training)
+- Minimum 8GB GPU memory for medium-sized models
 
 ## Installation
 
 1. Clone the repository: 
 ```bash
-git clone https://github.com/yourusername/llm-finetuner.git
+git clone https://github.com/v912485/llm-finetuner.git
 cd llm-finetuner
 ```
 
 2. Set up the backend:
 ```bash
 cd backend
-pip install flask flask-cors torch transformers tqdm
+pip install flask flask-cors torch transformers tqdm scikit-learn
 ```
 
 3. Set up the frontend:
@@ -38,6 +43,31 @@ pip install flask flask-cors torch transformers tqdm
 cd frontend
 npm install
 ```
+
+## Configuration
+
+### Model Configuration
+
+Models are configured in `backend/config.json`. The configuration file specifies available models and their requirements:
+
+```json
+{
+  "models": [
+    {
+      "id": "model-name",
+      "name": "Display Name",
+      "size": "small|medium|large",
+      "description": "Model description",
+      "requirements": {
+        "min_gpu_memory": "4GB",
+        "recommended_batch_size": 4
+      }
+    }
+  ]
+}
+```
+
+Add or remove models by editing this configuration file.
 
 ## Running the Application
 
@@ -54,6 +84,30 @@ npm start
 ```
 
 3. Open your browser and navigate to `http://localhost:3000`
+
+## Training Process
+
+1. **Model Selection**
+   - Choose from available pre-trained models
+   - Models are downloaded automatically when selected
+   - System checks for GPU memory requirements
+
+2. **Dataset Preparation**
+   - Upload training data files
+   - Configure input/output field mappings
+   - Automatic validation split (configurable percentage)
+
+3. **Training Configuration**
+   - Set learning rate
+   - Configure batch size
+   - Set number of epochs
+   - Adjust validation split ratio
+
+4. **Training Monitoring**
+   - Real-time progress tracking
+   - Loss metrics visualization
+   - Validation performance monitoring
+   - GPU memory usage tracking
 
 ## Data Preparation
 
@@ -82,14 +136,6 @@ instruction,input,output
 "Classify the sentiment of this text","This movie was absolutely fantastic!","positive"
 ```
 
-### Text Format
-For plain text files, each training example should be separated by newlines and follow this format:
-```text
-### Instruction: Classify the sentiment of this text
-### Input: This movie was absolutely fantastic!
-### Output: positive
-```
-
 ### Best Practices
 
 1. **Data Cleaning**
@@ -107,13 +153,27 @@ For plain text files, each training example should be separated by newlines and 
    - Ensure consistent output format
    - Check for any data leakage
 
-## Development
+4. **Memory Management**
+   - Consider GPU memory limitations
+   - Adjust batch size based on model size
+   - Use validation split appropriately
 
-- Backend API endpoints are defined in `backend/app.py`
-- Frontend React components are in `frontend/src/`
-- Styles are managed in `frontend/src/App.css`
-- Model downloads are stored in `backend/downloaded_models/`
-- Datasets are stored in `backend/datasets/`
+## Project Structure
+
+- `backend/`
+  - `app.py` - Main Flask application
+  - `config.json` - Model configuration
+  - `downloaded_models/` - Storage for downloaded models
+  - `datasets/` - Storage for uploaded datasets
+  - `dataset_configs/` - Dataset configuration storage
+  - `logs/` - Training logs
+
+- `frontend/`
+  - `src/`
+    - `App.js` - Main React component
+    - `Chat.js` - Chat interface component
+    - `App.css` - Main styles
+    - `Chat.css` - Chat interface styles
 
 ## Contributing
 
@@ -131,4 +191,5 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 - Built with React and Flask
 - Uses Hugging Face Transformers library
+- PyTorch for model training
 - Inspired by the need for accessible LLM fine-tuning tools 
