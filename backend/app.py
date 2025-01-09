@@ -20,6 +20,14 @@ import numpy as np
 import torch.cuda
 from torch.cuda.amp import autocast, GradScaler
 from sklearn.model_selection import train_test_split
+from peft import (
+    LoraConfig,
+    get_peft_model,
+    prepare_model_for_kbit_training,
+    TaskType
+)
+from transformers import BitsAndBytesConfig
+from os import environ
 
 app = Flask(__name__)
 CORS(app)
@@ -114,8 +122,12 @@ def load_config():
 # Load config at startup
 CONFIG = load_config()
 
+# Add after other environment variables
+HF_TOKEN = environ.get('HUGGING_FACE_TOKEN')
+
 @app.route('/api/models/available', methods=['GET'])
 def get_available_models():
+    # Return the complete model configurations from CONFIG
     return jsonify(CONFIG.get('models', []))
 
 @app.route('/api/models/download', methods=['POST'])
@@ -134,17 +146,20 @@ def download_model():
         safe_dir_name = model_id.replace('/', '_')
         model_path = os.path.join(MODELS_DIR, safe_dir_name)
         
-        print(f"Downloading model: {model_id} to {model_path}")  # Debug print
+        # Add token for gated models
+        auth_token = HF_TOKEN if 'google/gemma' in model_id else None
         
-        # Download model and tokenizer
+        # Download model and tokenizer with token
         model = AutoModelForCausalLM.from_pretrained(
             model_id,
             device_map="auto",
-            trust_remote_code=True
+            trust_remote_code=True,
+            token=auth_token
         )
         tokenizer = AutoTokenizer.from_pretrained(
             model_id,
-            trust_remote_code=True
+            trust_remote_code=True,
+            token=auth_token
         )
         
         # Save model and tokenizer
@@ -357,7 +372,56 @@ else:
 
 GRADIENT_ACCUMULATION_STEPS = 8  # Increased from 4
 MAX_LENGTH = 128  # Reduced from 256
-BATCH_SIZE = 2  # Reduced from 4
+BATCH_SIZE = 8  # Reduced from 4
+
+# Add LoRA configuration
+def get_model_config(model_id, use_qlora=False):
+    # Define target modules based on model architecture
+    target_modules = {
+        'gpt2': ["c_attn"],  # GPT-2 uses combined QKV attention
+        'facebook/opt': ["q_proj", "v_proj"],  # OPT uses separate Q,K,V
+        'google/gemma': ["q_proj", "v_proj"],  # Gemma uses separate Q,K,V
+        'default': ["query", "value"]  # Default for most models
+    }
+
+    # Get the correct target modules
+    model_prefix = next(
+        (prefix for prefix in target_modules.keys() if model_id.startswith(prefix)),
+        'default'
+    )
+    modules = target_modules[model_prefix]
+
+    if use_qlora:
+        # QLoRA configuration
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.bfloat16
+        )
+        
+        # LoRA config for 4-bit quantization
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=32,
+            target_modules=modules,
+            lora_dropout=0.05,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM
+        )
+        
+        return {"bnb_config": bnb_config, "lora_config": lora_config}
+    else:
+        # Standard LoRA configuration
+        lora_config = LoraConfig(
+            r=16,
+            lora_alpha=32,
+            target_modules=modules,
+            lora_dropout=0.05,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM
+        )
+        return {"lora_config": lora_config}
 
 def run_training(config):
     global training_status
@@ -377,13 +441,31 @@ def run_training(config):
         # Set environment variable for memory allocation
         os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
         
-        # Load model and tokenizer
+        use_qlora = config.get('use_qlora', False)
+        model_config = get_model_config(model_id, use_qlora)
+        
+        # Load model with appropriate configuration
         model = AutoModelForCausalLM.from_pretrained(
             model_path,
             device_map='auto' if ACCELERATOR_AVAILABLE else None,
             torch_dtype=torch.float32,
             low_cpu_mem_usage=True,
+            quantization_config=model_config.get('bnb_config') if use_qlora else None,
+            return_dict=True
         )
+        
+        # Enable gradients for all parameters
+        for param in model.parameters():
+            param.requires_grad = True
+
+        if use_qlora:
+            model = prepare_model_for_kbit_training(model)
+
+        # Add LoRA adapter
+        if config.get('trainingMethod') in ['lora', 'qlora']:
+            model = get_peft_model(model, model_config['lora_config'])
+            model.print_trainable_parameters()  # Debug info
+        
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         
         # Enable gradient checkpointing after model creation
@@ -421,7 +503,7 @@ def run_training(config):
                     return_tensors='pt'
                 )
                 
-                # Move tensors to CPU initially
+                # Return CPU tensors, let DataLoader handle device movement
                 return {
                     'input_ids': encoding['input_ids'].squeeze(),
                     'attention_mask': encoding['attention_mask'].squeeze()
@@ -444,7 +526,7 @@ def run_training(config):
             train_dataset,
             batch_size=BATCH_SIZE,
             shuffle=True,
-            pin_memory=True
+            pin_memory=ACCELERATOR_AVAILABLE  # Only pin if GPU is available
         )
         
         val_dataloader = DataLoader(
@@ -501,22 +583,18 @@ def run_training(config):
                     return
 
                 try:
-                    # Move batch to device here
-                    input_ids = batch['input_ids'].to(device, non_blocking=True)
-                    attention_mask = batch['attention_mask'].to(device, non_blocking=True)
-
-                    # Use gradient scaling with autocast
+                    # No need to move tensors to device since they're already there
+                    outputs = model(
+                        input_ids=batch['input_ids'],
+                        attention_mask=batch['attention_mask'],
+                        labels=batch['input_ids']
+                    )
+                    loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
+                    
+                    # Scale loss and backward pass
                     if ACCELERATOR_AVAILABLE:
                         with autocast():
-                            outputs = model(
-                                input_ids=input_ids,
-                                attention_mask=attention_mask,
-                                labels=input_ids
-                            )
-                            loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
-                        
-                        # Scale loss and backward pass
-                        scaler.scale(loss).backward()
+                            scaler.scale(loss).backward()
                         
                         if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
                             scaler.unscale_(optimizer)
@@ -527,12 +605,6 @@ def run_training(config):
                             scheduler.step()
                             current_step += 1
                     else:
-                        outputs = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
-                            labels=input_ids
-                        )
-                        loss = outputs.loss / GRADIENT_ACCUMULATION_STEPS
                         loss.backward()
                         
                         if (batch_idx + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
@@ -565,8 +637,17 @@ def run_training(config):
                     if "out of memory" in str(e):
                         if ACCELERATOR_AVAILABLE:
                             torch.cuda.empty_cache()
-                        logger.error(f"GPU OOM error at batch {batch_idx}. Skipping batch.")
-                        continue
+                        error_msg = (
+                            "GPU out of memory error. Please reduce the batch size in your training configuration. "
+                            f"Current batch size: {config.get('batchSize', BATCH_SIZE)}"
+                        )
+                        logger.error(error_msg)
+                        training_status.update({
+                            'error': error_msg,
+                            'is_training': False,
+                            'end_time': datetime.now().isoformat()
+                        })
+                        return  # Stop training completely
                     else:
                         raise e
 
@@ -939,6 +1020,17 @@ def prepare_training_validation_split(dataset_paths, dataset_configs, validation
     
     logger.info(f"Prepared {len(train_data)} training samples and {len(val_data)} validation samples")
     return train_data, val_data
+
+@app.route('/api/config', methods=['GET'])
+def get_config():
+    try:
+        with open('config.json', 'r') as f:
+            return jsonify(json.load(f))
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 if __name__ == '__main__':
     app.run(debug=True) 

@@ -89,6 +89,14 @@ function App() {
   const [isTraining, setIsTraining] = useState(false);
   const [downloadedModels, setDownloadedModels] = useState([]);
   const [downloadedDatasets, setDownloadedDatasets] = useState([]);
+  const [trainingMethod, setTrainingMethod] = useState('standard');
+  const [config, setConfig] = useState(null);
+
+  useEffect(() => {
+    fetch('http://localhost:5000/api/config')
+      .then(res => res.json())
+      .then(data => setConfig(data));
+  }, []);
 
   useEffect(() => {
     const fetchInitialData = async () => {
@@ -565,6 +573,23 @@ function App() {
     console.log('Selected model changed:', selectedModel);
   }, [selectedModel]);
 
+  const getSelectedModelConfig = () => {
+    return availableModels.find(model => model.id === selectedModel);
+  };
+
+  // Add this effect to reset training method when model changes
+  useEffect(() => {
+    const selectedModelConfig = availableModels.find(model => model.id === selectedModel);
+    if (!selectedModelConfig?.supports_lora) {
+      setTrainingMethod('standard');
+    }
+    console.log('Model selection changed:', {
+      selectedModel,
+      supportsLora: selectedModelConfig?.supports_lora,
+      trainingMethod
+    });
+  }, [selectedModel, availableModels]);
+
   return (
     <Router>
       <div className="App">
@@ -805,6 +830,24 @@ function App() {
               <section className="training-params">
                 <h2>3. Configure Training Parameters</h2>
                 <div className="params-form">
+                  <div className="param-group">
+                    <label>Training Method:</label>
+                    <select
+                      value={trainingMethod}
+                      onChange={(e) => setTrainingMethod(e.target.value)}
+                    >
+                      <option value="standard">Full Fine-tuning</option>
+                      {selectedModel && getSelectedModelConfig()?.supports_lora && (
+                        <>
+                          <option value="lora">LoRA (Memory Efficient)</option>
+                          <option value="qlora">QLoRA (Very Memory Efficient)</option>
+                        </>
+                      )}
+                    </select>
+                    <span className="param-help">
+                      {config?.training_methods?.[trainingMethod]?.description || ''}
+                    </span>
+                  </div>
                   <div className="param-group">
                     <label>Learning Rate:</label>
                     <input

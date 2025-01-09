@@ -851,3 +851,35 @@ input[type="file"] {
   padding: 0.5rem;
   border-radius: 4px;
 }
+
+.training-method-info {
+  margin-top: 1rem;
+  padding: 1rem;
+  background-color: #f8f9fa;
+  border-left: 4px solid #17a2b8;
+  border-radius: 0 4px 4px 0;
+}
+
+.memory-requirement {
+  display: inline-block;
+  padding: 0.25rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  margin-left: 0.5rem;
+}
+
+.memory-requirement.high {
+  background-color: #dc3545;
+  color: white;
+}
+
+.memory-requirement.medium {
+  background-color: #ffc107;
+  color: black;
+}
+
+.memory-requirement.low {
+  background-color: #28a745;
+  color: white;
+}

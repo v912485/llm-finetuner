@@ -1,15 +1,55 @@
 {
   "models": [
     {
+      "id": "google/gemma-2b-it",
+      "name": "Gemma 2B-IT",
+      "size": "medium",
+      "description": "2B parameters, instruction-tuned",
+      "supports_lora": true,
+      "requirements": {
+        "min_gpu_memory": {
+          "standard": "16GB",
+          "lora": "8GB",
+          "qlora": "4GB"
+        },
+        "recommended_batch_size": {
+          "cuda": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "rocm": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "cpu": 1
+        }
+      }
+    },
+    {
       "id": "gpt2",
       "name": "GPT-2",
       "size": "small",
       "description": "117M parameters",
+      "supports_lora": true,
       "requirements": {
-        "min_gpu_memory": "4GB",
+        "min_gpu_memory": {
+          "standard": "4GB",
+          "lora": "2GB",
+          "qlora": "1GB"
+        },
         "recommended_batch_size": {
-          "cuda": 4,
-          "rocm": 4,
+          "cuda": {
+            "standard": 4,
+            "lora": 8,
+            "qlora": 16
+          },
+          "rocm": {
+            "standard": 4,
+            "lora": 8,
+            "qlora": 16
+          },
           "cpu": 1
         }
       }
@@ -19,6 +59,7 @@
       "name": "GPT-2 Medium",
       "size": "medium",
       "description": "345M parameters",
+      "supports_lora": true,
       "requirements": {
         "min_gpu_memory": "8GB",
         "recommended_batch_size": {
@@ -33,6 +74,7 @@
       "name": "OPT 350M",
       "size": "medium",
       "description": "350M parameters",
+      "supports_lora": true,
       "requirements": {
         "min_gpu_memory": "8GB",
         "recommended_batch_size": {
@@ -47,5 +89,22 @@
     "cuda": "NVIDIA CUDA",
     "rocm": "AMD ROCm",
     "cpu": "CPU Only"
+  },
+  "training_methods": {
+    "standard": {
+      "name": "Full Fine-tuning",
+      "description": "Traditional fine-tuning of all model parameters",
+      "memory_requirement": "high"
+    },
+    "lora": {
+      "name": "LoRA",
+      "description": "Low-Rank Adaptation for efficient fine-tuning",
+      "memory_requirement": "medium"
+    },
+    "qlora": {
+      "name": "QLoRA",
+      "description": "Quantized Low-Rank Adaptation for very efficient fine-tuning",
+      "memory_requirement": "low"
+    }
   }
 } 

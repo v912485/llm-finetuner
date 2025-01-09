@@ -247,3 +247,41 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - Uses Hugging Face Transformers library
 - PyTorch for model training
 - Inspired by the need for accessible LLM fine-tuning tools 
+
+## Memory-Efficient Training
+
+The application supports three training methods:
+
+1. **Full Fine-tuning**
+   - Traditional fine-tuning of all model parameters
+   - Requires the most GPU memory
+   - Best for high-memory GPUs (8GB+)
+
+2. **LoRA (Low-Rank Adaptation)**
+   - Fine-tunes low-rank matrices instead of full model
+   - Requires ~50% less memory
+   - Good for medium-memory GPUs (4-8GB)
+
+3. **QLoRA (Quantized LoRA)**
+   - Combines 4-bit quantization with LoRA
+   - Requires ~75% less memory
+   - Works on low-memory GPUs (2-4GB)
+
+### Additional Dependencies for LoRA/QLoRA
+
+```bash
+pip install bitsandbytes peft
+``` 
+
+## Environment Setup
+
+For gated models like Gemma, set your Hugging Face token:
+```bash
+# Linux/Mac:
+export HUGGING_FACE_TOKEN="your_token_here"
+
+# Windows:
+set HUGGING_FACE_TOKEN=your_token_here
+```
+
+Get your token from: https://huggingface.co/settings/tokens
