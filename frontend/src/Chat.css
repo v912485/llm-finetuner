@@ -10,16 +10,31 @@
 
 .chat-model-selection {
   display: flex;
-  gap: 20px;
-  align-items: center;
-  margin-top: 10px;
+  flex-direction: column;
+  gap: 1rem;
+  margin-bottom: 1rem;
 }
 
-.chat-model-selection select {
-  padding: 8px;
+.model-select-group {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.model-select-group label {
+  font-weight: 500;
+}
+
+.model-select-group select {
+  padding: 0.5rem;
+  border: 1px solid #dee2e6;
   border-radius: 4px;
-  border: 1px solid #ddd;
-  min-width: 200px;
+  background-color: white;
+}
+
+.model-select-group select:disabled {
+  background-color: #e9ecef;
+  cursor: not-allowed;
 }
 
 .finetuned-toggle {

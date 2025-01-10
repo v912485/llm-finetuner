@@ -8,10 +8,12 @@ const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) =>
   const [tempConfig, setTempConfig] = useState(currentConfig || {});
 
   useEffect(() => {
+    console.log('ConfigForm received currentConfig:', currentConfig);
     setTempConfig(currentConfig || {});
   }, [currentConfig]);
 
   const handleSaveConfig = () => {
+    console.log('Saving config:', tempConfig);
     if (!tempConfig.inputField || !tempConfig.outputField) {
       alert('Please select both input and output fields');
       return;
@@ -70,7 +72,6 @@ const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) =>
 function App() {
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState(null);
-  const [dataset, setDataset] = useState(null);
   const [finetuningParams, setFinetuningParams] = useState({
     learningRate: 0.0001,
     batchSize: 8,
@@ -92,9 +93,11 @@ function App() {
   const [downloadedDatasets, setDownloadedDatasets] = useState([]);
   const [trainingMethod, setTrainingMethod] = useState('standard');
   const [config, setConfig] = useState(null);
+  const [saveName, setSaveName] = useState('');
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
 
   useEffect(() => {
-    fetch('http://localhost:5000/api/config')
+    fetch('http://localhost:5000/api/settings/config')
       .then(res => res.json())
       .then(data => setConfig(data));
   }, []);
@@ -190,11 +193,14 @@ function App() {
           const configs = {};
           const configured = [];
           data.configured_datasets.forEach(item => {
-            configs[item.file_path] = item.config;
-            configured.push(item.file_path);
+            // Use the path directly from the backend
+            configs[item.path] = item.config;
+            configured.push(item.path);
           });
           setFileConfig(configs);
           setConfiguredFiles(configured);
+          console.log('Loaded configurations:', configs);
+          console.log('Configured files:', configured);
         }
       } catch (error) {
         console.error('Error fetching configurations:', error);
@@ -203,28 +209,6 @@ function App() {
 
     fetchConfigurations();
   }, []);
-
-  const fetchAvailableModels = async () => {
-    try {
-      const response = await fetch('http://localhost:5000/api/models/available');
-      const data = await response.json();
-      setAvailableModels(data);
-    } catch (error) {
-      console.error('Error fetching models:', error);
-    }
-  };
-
-  const fetchDownloadedModels = async () => {
-    try {
-      const response = await fetch('http://localhost:5000/api/models/downloaded');
-      const data = await response.json();
-      if (data.status === 'success') {
-        setDownloadedModels(data.downloaded_models);
-      }
-    } catch (error) {
-      console.error('Error fetching downloaded models:', error);
-    }
-  };
 
   const handleModelDownload = async (modelId) => {
     setLoading(prev => ({ ...prev, [modelId]: true }));
@@ -271,7 +255,7 @@ function App() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('http://localhost:5000/api/dataset/prepare', {
+      const response = await fetch('http://localhost:5000/api/datasets/prepare', {
         method: 'POST',
         body: formData,
         onUploadProgress: (progressEvent) => {
@@ -314,7 +298,7 @@ function App() {
     // Fetch file structure if not already loaded
     if (!fileStructures[filePath]) {
       try {
-        const response = await fetch('http://localhost:5000/api/dataset/structure', {
+        const response = await fetch('http://localhost:5000/api/datasets/structure', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
@@ -339,7 +323,7 @@ function App() {
 
   const handleConfigUpdate = async (filePath, config) => {
     try {
-      const response = await fetch('http://localhost:5000/api/dataset/config', {
+      const response = await fetch('http://localhost:5000/api/datasets/config', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -365,146 +349,97 @@ function App() {
   };
 
   const handleConfigSave = async (file) => {
-    if (!fileConfig[file.path]) {
-      alert('Please configure the input and output fields first');
+    const currentConfig = fileConfig[file.path] || {};
+    
+    // Ensure we have both input and output fields
+    if (!currentConfig.inputField || !currentConfig.outputField) {
+      console.error('Missing input or output field configuration');
       return;
     }
 
     try {
-      const response = await fetch('http://localhost:5000/api/dataset/config', {
+      const response = await fetch('http://localhost:5000/api/datasets/config', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
           file_path: file.path,
-          config: fileConfig[file.path]
+          config: currentConfig
         }),
       });
 
       const data = await response.json();
       if (data.status === 'success') {
-        setConfiguredFiles(prev => 
-          prev.includes(file.path) ? prev : [...prev, file.path]
-        );
+        // Update local state
+        setConfiguredFiles(prev => {
+          if (!prev.includes(file.path)) {
+            return [...prev, file.path];
+          }
+          return prev;
+        });
+        
+        // Log success
+        console.log('Configuration saved successfully:', data);
       } else {
-        console.error('Error saving configuration:', data.message);
+        console.error('Error saving config:', data.message);
       }
     } catch (error) {
-      console.error('Error saving configuration:', error);
+      console.error('Error saving config:', error);
     }
+  };
+
+  // Add this function to handle field selection
+  const handleFieldSelection = (filePath, field, value) => {
+    setFileConfig(prev => ({
+      ...prev,
+      [filePath]: {
+        ...prev[filePath],
+        [field]: value
+      }
+    }));
   };
 
   const renderConfigForm = (file) => {
     const structure = fileStructures[file.path];
-    
-    if (!structure) {
-      return <div>Loading file structure...</div>;
-    }
+    if (!structure) return null;
 
+    // Get the current configuration for this file
     const currentConfig = fileConfig[file.path] || {};
-    const isConfigured = configuredFiles.includes(file.path);
-
-    const handleSaveConfigWrapper = (filePath, config) => {
-      handleConfigUpdate(filePath, config);
-      handleConfigSave(file);
-    };
+    console.log('Current config for file:', file.path, currentConfig);
 
     return (
       <ConfigForm
         file={file}
         structure={structure}
         currentConfig={currentConfig}
-        onSave={handleSaveConfigWrapper}
-        isConfigured={isConfigured}
+        onSave={handleConfigSave}
+        isConfigured={configuredFiles.includes(file.path)}
       />
     );
   };
 
-  const getFileType = (filename) => {
-    const ext = filename.split('.').pop().toLowerCase();
-    return ext;
-  };
-
-  const getDefaultConfig = (fileType) => {
-    switch (fileType) {
-      case 'json':
-      case 'jsonl':
-        return {
-          inputField: 'input',
-          outputField: 'output',
-          instructionField: 'instruction'
-        };
-      case 'csv':
-        return {
-          inputField: 'input',
-          outputField: 'output',
-          instructionField: 'instruction',
-          delimiter: ','
-        };
-      case 'txt':
-        return {
-          inputMarker: '### Input:',
-          outputMarker: '### Output:',
-          instructionMarker: '### Instruction:'
-        };
-      default:
-        return {};
+  const fetchDownloadedModels = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/models/downloaded');
+      const data = await response.json();
+      if (data.status === 'success') {
+        setDownloadedModels(data.downloaded_models);
+      }
+    } catch (error) {
+      console.error('Error fetching downloaded models:', error);
     }
-  };
-
-  const renderFileItem = (file, index) => {
-    const isConfigured = configuredFiles.includes(file.path);
-    const isSelected = selectedFiles.includes(file.path);
-    
-    return (
-      <div key={index}>
-        <div className="file-item">
-          <input
-            type="checkbox"
-            checked={isSelected}
-            onChange={() => handleFileSelection(file.path)}
-          />
-          <div className="file-info">
-            <span className="file-name">{file.name}</span>
-            <span className="file-size">
-              {(file.size / 1024).toFixed(2)} KB
-            </span>
-            <span className="file-date">{file.uploadedAt}</span>
-            <button
-              className={`config-toggle ${isConfigured ? 'configured' : ''}`}
-              onClick={() => {
-                if (configuredFiles.includes(file.path)) {
-                  setConfiguredFiles(prev => prev.filter(f => f !== file.path));
-                } else {
-                  handleConfigSave(file);
-                }
-              }}
-            >
-              {configuredFiles.includes(file.path) ? 'Edit Config' : 'Save Config'}
-            </button>
-          </div>
-        </div>
-        {isSelected && (
-          <div className="file-config-wrapper">
-            <h4>Configure Training Data Fields</h4>
-            <p className="config-help">
-              Specify which fields in your data file contain the input text and expected output.
-            </p>
-            {renderConfigForm(file)}
-          </div>
-        )}
-      </div>
-    );
   };
 
   const fetchTrainingStatus = async () => {
     try {
       const response = await fetch('http://localhost:5000/api/training/status');
       const data = await response.json();
-      setTrainingStatus(data);
-      if (!data.is_training) {
-        setIsTraining(false);
+      if (data.status === 'success') {
+        setTrainingStatus(data);
+        if (!data.is_training) {
+          setIsTraining(false);
+        }
       }
     } catch (error) {
       console.error('Error fetching training status:', error);
@@ -512,27 +447,11 @@ function App() {
   };
 
   const startTraining = async () => {
-    if (!selectedModel) {
-      alert('Please select a model for training');
+    if (!selectedModel || selectedFiles.length === 0) {
       return;
     }
 
-    if (selectedFiles.length === 0) {
-      alert('Please select at least one dataset by checking the checkbox next to it');
-      return;
-    }
-
-    // Check if all selected files are configured
-    const unconfiguredFiles = selectedFiles.filter(file => !configuredFiles.includes(file));
-    if (unconfiguredFiles.length > 0) {
-      alert(`Please configure and save the following datasets:\n${
-        unconfiguredFiles.map(file => 
-          uploadedFiles.find(f => f.path === file)?.name || file
-        ).join('\n')
-      }`);
-      return;
-    }
-
+    setIsTraining(true);
     try {
       const response = await fetch('http://localhost:5000/api/training/start', {
         method: 'POST',
@@ -542,22 +461,26 @@ function App() {
         body: JSON.stringify({
           model_id: selectedModel,
           datasets: selectedFiles,
-          dataset_configs: Object.fromEntries(
-            selectedFiles.map(file => [file, fileConfig[file]])
-          ),
-          ...finetuningParams
+          params: {
+            learningRate: finetuningParams.learningRate,
+            batchSize: finetuningParams.batchSize,
+            epochs: finetuningParams.epochs,
+            validationSplit: finetuningParams.validationSplit,
+            training_method: trainingMethod
+          }
         }),
       });
 
       const data = await response.json();
       if (data.status === 'success') {
-        setIsTraining(true);
+        console.log('Training started successfully');
       } else {
-        alert(data.message || 'Failed to start training');
+        console.error('Error starting training:', data.message);
+        setIsTraining(false);
       }
     } catch (error) {
       console.error('Error starting training:', error);
-      alert('Failed to start training');
+      setIsTraining(false);
     }
   };
 
@@ -574,22 +497,52 @@ function App() {
     console.log('Selected model changed:', selectedModel);
   }, [selectedModel]);
 
+  useEffect(() => {
+    const getSelectedModelConfig = () => {
+      return availableModels.find(model => model.id === selectedModel);
+    };
+    
+    const selectedModelConfig = getSelectedModelConfig();
+    if (!selectedModelConfig?.supports_lora && trainingMethod !== 'standard') {
+      setTrainingMethod('standard');
+    }
+  }, [selectedModel, trainingMethod, availableModels]);
+
   const getSelectedModelConfig = () => {
     return availableModels.find(model => model.id === selectedModel);
   };
 
-  // Add this effect to reset training method when model changes
-  useEffect(() => {
-    const selectedModelConfig = availableModels.find(model => model.id === selectedModel);
-    if (!selectedModelConfig?.supports_lora) {
-      setTrainingMethod('standard');
+  const handleSaveModel = async () => {
+    if (!saveName.trim()) {
+      alert('Please enter a name for the saved model');
+      return;
     }
-    console.log('Model selection changed:', {
-      selectedModel,
-      supportsLora: selectedModelConfig?.supports_lora,
-      trainingMethod
-    });
-  }, [selectedModel, availableModels]);
+
+    try {
+      const response = await fetch('http://localhost:5000/api/training/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model_id: selectedModel,
+          save_name: saveName
+        }),
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        alert('Model saved successfully!');
+        setShowSaveDialog(false);
+        setSaveName('');
+      } else {
+        alert(`Error saving model: ${data.message}`);
+      }
+    } catch (error) {
+      console.error('Error saving model:', error);
+      alert('Error saving model');
+    }
+  };
 
   return (
     <Router>
@@ -930,6 +883,16 @@ function App() {
                   <div className="training-status">
                     <h3>Training Status</h3>
                     <div className="status-details">
+                      <div className="status-item device-info">
+                        <span>Device:</span>
+                        <span>
+                          {trainingStatus.device_info?.name} ({trainingStatus.device_info?.type.toUpperCase()})
+                          {trainingStatus.device_info?.memory && 
+                            <span className="device-memory"> - {trainingStatus.device_info.memory}</span>
+                          }
+                        </span>
+                      </div>
+                      
                       <div className="status-item">
                         <span>Progress:</span>
                         <div className="progress-bar-container">
@@ -956,6 +919,35 @@ function App() {
                         </div>
                       )}
                     </div>
+                  </div>
+                )}
+
+                {trainingStatus && trainingStatus.progress === 100 && !trainingStatus.error && (
+                  <div className="save-model-section">
+                    <button 
+                      className="save-model-button"
+                      onClick={() => setShowSaveDialog(true)}
+                    >
+                      Save Trained Model
+                    </button>
+                    
+                    {showSaveDialog && (
+                      <div className="save-dialog">
+                        <input
+                          type="text"
+                          value={saveName}
+                          onChange={(e) => setSaveName(e.target.value)}
+                          placeholder="Enter name for saved model"
+                        />
+                        <div className="save-dialog-buttons">
+                          <button onClick={handleSaveModel}>Save</button>
+                          <button onClick={() => {
+                            setShowSaveDialog(false);
+                            setSaveName('');
+                          }}>Cancel</button>
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </section>

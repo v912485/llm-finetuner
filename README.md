@@ -51,11 +51,11 @@ python -m venv venv
 # Install backend dependencies based on your GPU:
 
 ## For NVIDIA GPU:
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
 
 ## For AMD GPU (ROCm, Linux only):
 # First install ROCm following instructions at: https://rocm.docs.amd.com/en/latest/deploy/linux/quick_start.html
-pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm5.6
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/rocm6.3
 
 ## For CPU only:
 pip install torch torchvision torchaudio
