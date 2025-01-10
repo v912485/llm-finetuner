@@ -22,6 +22,7 @@ env.bak/
 venv.bak/
 downloaded_models/
 saved_models/
+data/
 
 # Flask
 instance/
