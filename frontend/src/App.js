@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import './App.css';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
 import Chat from './Chat';
+import Settings from './Settings';
 
 const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) => {
   const [tempConfig, setTempConfig] = useState(currentConfig || {});
@@ -594,8 +595,9 @@ function App() {
     <Router>
       <div className="App">
         <nav className="app-nav">
-          <Link to="/">Training</Link>
+          <Link to="/">Home</Link>
           <Link to="/chat">Chat</Link>
+          <Link to="/settings">Settings</Link>
         </nav>
 
         <Routes>
@@ -959,6 +961,7 @@ function App() {
               </section>
             </>
           } />
+          <Route path="/settings" element={<Settings />} />
         </Routes>
       </div>
     </Router>

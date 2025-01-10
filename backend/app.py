@@ -1124,5 +1124,63 @@ def get_config():
             'message': str(e)
         }), 500
 
+# Add new routes for settings
+@app.route('/api/settings/huggingface_token', methods=['GET'])
+def get_huggingface_token():
+    token = os.environ.get('HUGGING_FACE_TOKEN', '')
+    return jsonify({
+        'status': 'success',
+        'token': token
+    })
+
+@app.route('/api/settings/huggingface_token', methods=['POST'])
+def save_huggingface_token():
+    data = request.json
+    token = data.get('token')
+    
+    if not token:
+        return jsonify({
+            'status': 'error',
+            'message': 'Token is required'
+        }), 400
+    
+    try:
+        # Save to .env file
+        env_path = Path('.env')
+        if env_path.exists():
+            with open(env_path, 'r') as f:
+                lines = f.readlines()
+            
+            # Update existing token if found
+            token_updated = False
+            for i, line in enumerate(lines):
+                if line.startswith('HUGGING_FACE_TOKEN='):
+                    lines[i] = f'HUGGING_FACE_TOKEN={token}\n'
+                    token_updated = True
+                    break
+            
+            if not token_updated:
+                lines.append(f'HUGGING_FACE_TOKEN={token}\n')
+            
+            with open(env_path, 'w') as f:
+                f.writelines(lines)
+        else:
+            with open(env_path, 'w') as f:
+                f.write(f'HUGGING_FACE_TOKEN={token}\n')
+        
+        # Update environment variable
+        os.environ['HUGGING_FACE_TOKEN'] = token
+        
+        return jsonify({
+            'status': 'success',
+            'message': 'Token saved successfully'
+        })
+        
+    except Exception as e:
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
+        }), 500
+
 if __name__ == '__main__':
     app.run(debug=True) 
