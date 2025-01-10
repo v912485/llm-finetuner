@@ -10,6 +10,12 @@ function Chat() {
   const [message, setMessage] = useState('');
   const [chatHistory, setChatHistory] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [inferenceConfig, setInferenceConfig] = useState({
+    temperature: 0.7,
+    maxLength: 512,
+    doSample: true
+  });
+  const [showConfig, setShowConfig] = useState(false);
 
   useEffect(() => {
     fetchDownloadedModels();
@@ -59,7 +65,10 @@ function Chat() {
           model_id: selectedSavedModel?.original_model || selectedModel,
           input: message,
           use_finetuned: useFinetuned || !!selectedSavedModel,
-          saved_model_name: selectedSavedModel?.name
+          saved_model_name: selectedSavedModel?.name,
+          temperature: inferenceConfig.temperature,
+          max_length: inferenceConfig.maxLength,
+          do_sample: inferenceConfig.doSample
         }),
       });
 
@@ -91,6 +100,63 @@ function Chat() {
     <div className="chat-container">
       <div className="chat-header">
         <h2>Chat with AI Model</h2>
+        <button 
+          className="config-toggle-btn"
+          onClick={() => setShowConfig(!showConfig)}
+        >
+          {showConfig ? 'Hide Settings' : 'Show Settings'}
+        </button>
+        {showConfig && (
+          <div className="inference-config">
+            <div className="config-group">
+              <label>Temperature:</label>
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.1"
+                value={inferenceConfig.temperature}
+                onChange={(e) => setInferenceConfig(prev => ({
+                  ...prev,
+                  temperature: parseFloat(e.target.value)
+                }))}
+              />
+              <span className="config-value">{inferenceConfig.temperature}</span>
+              <div className="config-help">Controls randomness (0 = deterministic, 2 = very random)</div>
+            </div>
+
+            <div className="config-group">
+              <label>Max Length:</label>
+              <input
+                type="number"
+                min="64"
+                max="2048"
+                step="64"
+                value={inferenceConfig.maxLength}
+                onChange={(e) => setInferenceConfig(prev => ({
+                  ...prev,
+                  maxLength: parseInt(e.target.value)
+                }))}
+              />
+              <div className="config-help">Maximum length of generated response</div>
+            </div>
+
+            <div className="config-group">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={inferenceConfig.doSample}
+                  onChange={(e) => setInferenceConfig(prev => ({
+                    ...prev,
+                    doSample: e.target.checked
+                  }))}
+                />
+                Enable Sampling
+              </label>
+              <div className="config-help">Use sampling for text generation (recommended)</div>
+            </div>
+          </div>
+        )}
         <div className="chat-model-selection">
           <div className="model-select-group">
             <label>Base Model:</label>

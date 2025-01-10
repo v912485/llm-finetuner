@@ -962,3 +962,30 @@ input[type="file"] {
   background-color: #6c757d;
   color: white;
 }
+
+.training-graph-container {
+  margin-top: 20px;
+  padding: 15px;
+  background: white;
+  border-radius: 4px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+.cancel-training-button {
+  background-color: #dc3545;
+  color: white;
+  border: none;
+  padding: 0.5rem 1rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+  transition: background-color 0.2s ease;
+}
+
+.cancel-training-button:hover {
+  background-color: #c82333;
+}
+
+.cancel-training-button:active {
+  background-color: #bd2130;
+}

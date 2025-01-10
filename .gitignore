@@ -23,6 +23,7 @@ venv.bak/
 downloaded_models/
 saved_models/
 data/
+datasets/
 
 # Flask
 instance/

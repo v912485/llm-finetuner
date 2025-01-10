@@ -5,6 +5,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from config.settings import MODELS_DIR
 import logging
 from flask import jsonify
+from training.trainer_instance import trainer
 
 logger = logging.getLogger('training')
 
@@ -12,6 +13,8 @@ class ModelManager:
     def __init__(self):
         self.config_path = Path(__file__).parent.parent / 'config.json'
         self.hf_token = os.environ.get('HUGGING_FACE_TOKEN')
+        self.trainer = trainer
+        self.available_models = self.get_available_models()
         
     def load_config(self):
         try:
@@ -22,6 +25,7 @@ class ModelManager:
             return {"models": []}
             
     def get_available_models(self):
+        """Get list of available models from config"""
         return self.load_config().get('models', [])
         
     def get_downloaded_models(self):
@@ -76,3 +80,9 @@ class ModelManager:
                 "status": "error",
                 "message": f"Failed to download model: {str(e)}"
             }), 500 
+            
+    def cancel_training(self):
+        """Cancel ongoing training"""
+        if not self.trainer.is_training():
+            raise ValueError("No training in progress")
+        self.trainer.cancel_training() 

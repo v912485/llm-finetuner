@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from training.trainer import Trainer
+from training.trainer_instance import trainer  # Import shared trainer
 import logging
 import json
 from datetime import datetime
@@ -9,7 +9,6 @@ import shutil
 
 bp = Blueprint('training', __name__, url_prefix='/api/training')
 logger = logging.getLogger('training')
-trainer = Trainer()
 
 @bp.route('/start', methods=['POST'])
 def start_training():
@@ -33,7 +32,7 @@ def start_training():
         }), 400
     
     try:
-        trainer.start_training(data)
+        trainer.start_training(data)  # Use shared trainer
         logger.info("Training started successfully")
         return jsonify({
             "status": "success",

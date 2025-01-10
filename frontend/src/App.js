@@ -3,12 +3,13 @@ import './App.css';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
 import Chat from './Chat';
 import Settings from './Settings';
+import TrainingGraph from './components/TrainingGraph';
 
 const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) => {
   const [tempConfig, setTempConfig] = useState(currentConfig || {});
 
   useEffect(() => {
-    console.log('ConfigForm received currentConfig:', currentConfig);
+    console.log('ConfigForm received new config:', currentConfig);
     setTempConfig(currentConfig || {});
   }, [currentConfig]);
 
@@ -27,10 +28,10 @@ const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) =>
         <label>Input Field:</label>
         <select
           value={tempConfig.inputField || ''}
-          onChange={(e) => setTempConfig({
-            ...tempConfig,
+          onChange={(e) => setTempConfig(prev => ({
+            ...prev,
             inputField: e.target.value
-          })}
+          }))}
         >
           <option value="">Select input field</option>
           {structure.fields.map(field => (
@@ -42,10 +43,10 @@ const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) =>
         <label>Output Field:</label>
         <select
           value={tempConfig.outputField || ''}
-          onChange={(e) => setTempConfig({
-            ...tempConfig,
+          onChange={(e) => setTempConfig(prev => ({
+            ...prev,
             outputField: e.target.value
-          })}
+          }))}
         >
           <option value="">Select output field</option>
           {structure.fields.map(field => (
@@ -59,11 +60,8 @@ const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) =>
           onClick={handleSaveConfig}
           disabled={!tempConfig.inputField || !tempConfig.outputField}
         >
-          Save Configuration
+          {isConfigured ? 'Update Configuration' : 'Save Configuration'}
         </button>
-        {isConfigured && (
-          <span className="config-saved-status">✓ Configuration Saved</span>
-        )}
       </div>
     </div>
   );
@@ -95,6 +93,7 @@ function App() {
   const [config, setConfig] = useState(null);
   const [saveName, setSaveName] = useState('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [datasetConfigs, setDatasetConfigs] = useState({});
 
   useEffect(() => {
     fetch('http://localhost:5000/api/settings/config')
@@ -153,6 +152,10 @@ function App() {
         const data = await response.json();
         if (data.status === 'success') {
           setDownloadedDatasets(data.datasets);
+          // Fetch structure for each dataset
+          data.datasets.forEach(dataset => {
+            fetchFileStructure(dataset.path);
+          });
         }
       } catch (error) {
         console.error('Error fetching datasets:', error);
@@ -191,16 +194,19 @@ function App() {
         const data = await response.json();
         if (data.status === 'success') {
           const configs = {};
-          const configured = [];
-          data.configured_datasets.forEach(item => {
-            // Use the path directly from the backend
-            configs[item.path] = item.config;
-            configured.push(item.path);
+          const configuredPaths = [];
+          
+          data.configured_datasets.forEach(dataset => {
+            configs[dataset.path] = {
+              inputField: dataset.config.input_field,
+              outputField: dataset.config.output_field
+            };
+            configuredPaths.push(dataset.path);
           });
+          
           setFileConfig(configs);
-          setConfiguredFiles(configured);
+          setConfiguredFiles(configuredPaths);
           console.log('Loaded configurations:', configs);
-          console.log('Configured files:', configured);
         }
       } catch (error) {
         console.error('Error fetching configurations:', error);
@@ -209,6 +215,30 @@ function App() {
 
     fetchConfigurations();
   }, []);
+
+  useEffect(() => {
+    fetchConfiguredDatasets();
+  }, []);
+
+  const fetchConfiguredDatasets = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/datasets/configured');
+      const data = await response.json();
+      if (data.status === 'success') {
+        const configs = {};
+        data.configured_datasets.forEach(dataset => {
+          configs[dataset.path] = {
+            inputField: dataset.config.input_field,
+            outputField: dataset.config.output_field
+          };
+        });
+        setDatasetConfigs(configs);
+        console.log('Loaded dataset configs:', configs);
+      }
+    } catch (error) {
+      console.error('Error fetching dataset configurations:', error);
+    }
+  };
 
   const handleModelDownload = async (modelId) => {
     setLoading(prev => ({ ...prev, [modelId]: true }));
@@ -287,36 +317,16 @@ function App() {
     }
   };
 
-  const handleFileSelection = async (filePath) => {
-    setSelectedFiles(prev => {
-      if (prev.includes(filePath)) {
-        return prev.filter(f => f !== filePath);
-      }
-      return [...prev, filePath];
-    });
-
-    // Fetch file structure if not already loaded
-    if (!fileStructures[filePath]) {
-      try {
-        const response = await fetch('http://localhost:5000/api/datasets/structure', {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ file_path: filePath }),
-        });
-        
-        const data = await response.json();
-        if (data.status === 'success') {
-          setFileStructures(prev => ({
-            ...prev,
-            [filePath]: data.structure
-          }));
-        } else {
-          console.error('Error fetching file structure:', data.message);
-        }
-      } catch (error) {
-        console.error('Error fetching file structure:', error);
+  const handleFileSelect = (file) => {
+    console.log('Selected file:', file);
+    
+    if (selectedFiles.includes(file.path)) {
+      setSelectedFiles(prev => prev.filter(f => f !== file.path));
+    } else {
+      setSelectedFiles(prev => [...prev, file.path]);
+      // Fetch structure if not already loaded
+      if (!fileStructures[file.path]) {
+        fetchFileStructure(file.path);
       }
     }
   };
@@ -348,15 +358,7 @@ function App() {
     }
   };
 
-  const handleConfigSave = async (file) => {
-    const currentConfig = fileConfig[file.path] || {};
-    
-    // Ensure we have both input and output fields
-    if (!currentConfig.inputField || !currentConfig.outputField) {
-      console.error('Missing input or output field configuration');
-      return;
-    }
-
+  const handleConfigSave = async (filePath, config) => {
     try {
       const response = await fetch('http://localhost:5000/api/datasets/config', {
         method: 'POST',
@@ -364,28 +366,27 @@ function App() {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify({
-          file_path: file.path,
-          config: currentConfig
+          file_path: filePath,
+          config: {
+            inputField: config.inputField,
+            outputField: config.outputField
+          }
         }),
       });
 
       const data = await response.json();
       if (data.status === 'success') {
-        // Update local state
-        setConfiguredFiles(prev => {
-          if (!prev.includes(file.path)) {
-            return [...prev, file.path];
-          }
-          return prev;
-        });
-        
-        // Log success
-        console.log('Configuration saved successfully:', data);
+        setDatasetConfigs(prev => ({
+          ...prev,
+          [filePath]: config
+        }));
+        console.log('Configuration saved successfully');
       } else {
-        console.error('Error saving config:', data.message);
+        throw new Error(data.message || 'Failed to save configuration');
       }
     } catch (error) {
-      console.error('Error saving config:', error);
+      console.error('Error saving configuration:', error);
+      alert(`Error saving configuration: ${error.message}`);
     }
   };
 
@@ -402,19 +403,27 @@ function App() {
 
   const renderConfigForm = (file) => {
     const structure = fileStructures[file.path];
-    if (!structure) return null;
-
-    // Get the current configuration for this file
-    const currentConfig = fileConfig[file.path] || {};
-    console.log('Current config for file:', file.path, currentConfig);
-
+    const currentConfig = fileConfig[file.path];
+    const isConfigured = configuredFiles.includes(file.path);
+    
+    console.log('Rendering config form:', {
+      path: file.path,
+      structure,
+      currentConfig,
+      isConfigured
+    });
+    
+    if (!structure) {
+      return <div>Loading structure...</div>;
+    }
+    
     return (
       <ConfigForm
         file={file}
         structure={structure}
         currentConfig={currentConfig}
         onSave={handleConfigSave}
-        isConfigured={configuredFiles.includes(file.path)}
+        isConfigured={isConfigured}
       />
     );
   };
@@ -489,7 +498,7 @@ function App() {
   };
 
   const areSelectedFilesConfigured = () => {
-    return selectedFiles.every(file => configuredFiles.includes(file));
+    return selectedFiles.every(file => datasetConfigs[file]);
   };
 
   // Add this useEffect to debug selectedModel changes
@@ -541,6 +550,52 @@ function App() {
     } catch (error) {
       console.error('Error saving model:', error);
       alert('Error saving model');
+    }
+  };
+
+  const fetchFileStructure = async (filePath) => {
+    try {
+      const response = await fetch('http://localhost:5000/api/datasets/structure', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ file_path: filePath }),
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        setFileStructures(prev => ({
+          ...prev,
+          [filePath]: data.structure
+        }));
+        console.log('Loaded structure for:', filePath, data.structure);
+      } else {
+        console.error('Error loading structure:', data.message);
+      }
+    } catch (error) {
+      console.error('Error fetching file structure:', error);
+    }
+  };
+
+  // Add cancel training function
+  const cancelTraining = async () => {
+    try {
+      const response = await fetch('http://localhost:5000/api/models/cancel-training', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        }
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        console.log('Training cancelled');
+      } else {
+        console.error('Error cancelling training:', data.message);
+      }
+    } catch (error) {
+      console.error('Error cancelling training:', error);
     }
   };
 
@@ -661,7 +716,7 @@ function App() {
                             <div className="dataset-actions">
                               <button
                                 className="dataset-select-btn"
-                                onClick={() => handleFileSelection(dataset.path)}
+                                onClick={() => handleFileSelect(dataset)}
                               >
                                 {isSelected ? 'Selected ✓' : 'Select'}
                               </button>
@@ -736,7 +791,7 @@ function App() {
                               <input
                                 type="checkbox"
                                 checked={isSelected}
-                                onChange={() => handleFileSelection(file.path)}
+                                onChange={() => handleFileSelect(file)}
                               />
                               <div className="file-info">
                                 <span className="file-name">{file.name}</span>
@@ -867,17 +922,25 @@ function App() {
 
               <section className="training-control">
                 <h2>4. Training Control</h2>
-                <button
-                  className="start-training-button"
-                  onClick={startTraining}
-                  disabled={isTraining || !selectedModel || selectedFiles.length === 0 || !areSelectedFilesConfigured()}
-                >
-                  {isTraining ? 'Training in Progress...' : 
-                   !selectedModel ? 'Select a Model First' :
-                   selectedFiles.length === 0 ? 'Select Dataset(s)' :
-                   !areSelectedFilesConfigured() ? 'Configure Selected Dataset(s)' :
-                   'Start Training'}
-                </button>
+                {!isTraining ? (
+                  <button
+                    className="start-training-button"
+                    onClick={startTraining}
+                    disabled={!selectedModel || selectedFiles.length === 0 || !areSelectedFilesConfigured()}
+                  >
+                    {!selectedModel ? 'Select a Model First' :
+                     selectedFiles.length === 0 ? 'Select Dataset(s)' :
+                     !areSelectedFilesConfigured() ? 'Configure Selected Dataset(s)' :
+                     'Start Training'}
+                  </button>
+                ) : (
+                  <button
+                    className="cancel-training-button"
+                    onClick={cancelTraining}
+                  >
+                    Cancel Training
+                  </button>
+                )}
 
                 {trainingStatus && (
                   <div className="training-status">
@@ -919,6 +982,17 @@ function App() {
                         </div>
                       )}
                     </div>
+
+                    {trainingStatus.history && trainingStatus.history.length > 0 && (
+                      <div className="training-graph-container">
+                        <h4>Training Progress</h4>
+                        <TrainingGraph 
+                          history={trainingStatus.history}
+                          currentEpoch={trainingStatus.current_epoch}
+                          totalEpochs={trainingStatus.total_epochs}
+                        />
+                      </div>
+                    )}
                   </div>
                 )}
 

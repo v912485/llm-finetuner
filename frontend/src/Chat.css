@@ -109,4 +109,57 @@
 .chat-input button:disabled {
   background-color: #6c757d;
   cursor: not-allowed;
+}
+
+.config-toggle-btn {
+  padding: 0.5rem 1rem;
+  background-color: #6c757d;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-bottom: 1rem;
+}
+
+.inference-config {
+  background-color: #f8f9fa;
+  padding: 1rem;
+  border-radius: 4px;
+  margin-bottom: 1rem;
+  border: 1px solid #dee2e6;
+}
+
+.config-group {
+  margin-bottom: 1rem;
+}
+
+.config-group label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-weight: 500;
+}
+
+.config-group input[type="range"] {
+  flex: 1;
+  margin: 0 0.5rem;
+}
+
+.config-group input[type="number"] {
+  width: 100px;
+  padding: 0.25rem;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+}
+
+.config-value {
+  min-width: 2.5em;
+  text-align: right;
+  color: #666;
+}
+
+.config-help {
+  font-size: 0.875rem;
+  color: #666;
+  margin-top: 0.25rem;
 } 

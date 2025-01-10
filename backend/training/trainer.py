@@ -31,10 +31,12 @@ class Trainer:
             'current_step': None,
             'total_steps': None,
             'learning_rate': None,
-            'device_info': DEVICE_INFO
+            'device_info': DEVICE_INFO,
+            'history': []  # Add history array to track metrics
         }
         self.device = torch.device('cuda' if ACCELERATOR_AVAILABLE else 'cpu')
         self.is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+        self.should_stop = False  # Add flag for cancellation
         
         # Log device information at initialization
         logger.info(f"Trainer initialized with device: {self.device}")
@@ -99,14 +101,18 @@ class Trainer:
 
     def start_training(self, config):
         try:
+            # Get epochs from params if provided, otherwise use default
+            num_epochs = config.get('params', {}).get('epochs', 3)
+            
             self.training_status.update({
                 'is_training': True,
                 'progress': 0,
                 'start_time': datetime.now().isoformat(),
                 'model_id': config['model_id'],
                 'dataset_info': config['datasets'],
-                'total_epochs': config.get('epochs', 3),
-                'learning_rate': config.get('learningRate', 0.0001)
+                'current_epoch': 0,  # Initialize current epoch
+                'total_epochs': num_epochs,  # Set total epochs from config
+                'learning_rate': config.get('params', {}).get('learningRate', 0.0001)
             })
 
             # Start training in a separate thread
@@ -122,23 +128,84 @@ class Trainer:
             })
             raise
 
+    def cancel_training(self):
+        """Cancel ongoing training"""
+        logger.info("Cancelling training...")
+        self.should_stop = True
+        self.training_status.update({
+            'is_training': False,
+            'end_time': datetime.now().isoformat(),
+            'error': 'Training cancelled by user'
+        })
+
+    def _load_and_validate_dataset(self, dataset_path, config):
+        """Helper function to load and validate dataset with error handling"""
+        try:
+            # First try to load the entire file
+            try:
+                with open(dataset_path, 'r', encoding='utf-8') as f:
+                    dataset = json.load(f)
+                    logger.info(f"Successfully loaded dataset: {dataset_path}")
+                    return dataset
+            except json.JSONDecodeError as e:
+                logger.warning(f"Initial JSON load failed, trying line-by-line: {str(e)}")
+                
+                # If that fails, try to read line by line
+                valid_entries = []
+                with open(dataset_path, 'r', encoding='utf-8') as f:
+                    for line_num, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line:  # Skip empty lines
+                            continue
+                        try:
+                            entry = json.loads(line)
+                            valid_entries.append(entry)
+                        except json.JSONDecodeError as line_error:
+                            logger.error(f"Error parsing line {line_num}: {str(line_error)}")
+                            continue
+                
+                if not valid_entries:
+                    raise ValueError("No valid JSON entries found in file")
+                    
+                logger.info(f"Loaded {len(valid_entries)} valid entries from {dataset_path}")
+                return valid_entries
+                
+        except Exception as e:
+            logger.error(f"Error loading dataset {dataset_path}: {str(e)}")
+            raise
+
     def _run_training(self, config):
         try:
+            self.should_stop = False  # Reset stop flag
             model_id = config['model_id']
             datasets = config['datasets']
             params = config.get('params', {})
-            validation_split = float(params.get('validationSplit', 0.2))
             
-            logger.info(f"Starting training for model {model_id} with datasets {datasets}")
-            logger.info(f"Using validation split: {validation_split}")
+            # Get training parameters with defaults
+            validation_split = float(params.get('validationSplit', 0.2))
+            num_epochs = int(params.get('epochs', 3))
+            batch_size = int(params.get('batchSize', BATCH_SIZE))
+            learning_rate = float(params.get('learningRate', 0.0001))
+            training_method = params.get('training_method', 'standard')
+            
+            logger.info(f"Training parameters:")
+            logger.info(f"- Epochs: {num_epochs}")
+            logger.info(f"- Batch size: {batch_size}")
+            logger.info(f"- Learning rate: {learning_rate}")
+            logger.info(f"- Validation split: {validation_split}")
+            logger.info(f"- Training method: {training_method}")
             
             # First load model and tokenizer
             safe_model_name = model_id.replace('/', '_')
             model_path = MODELS_DIR / safe_model_name
             
-            training_method = params.get('training_method', 'standard')
-            logger.info(f"Using training method: {training_method}")
+            # Load tokenizer first
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True
+            )
             
+            # Load model based on training method
             if training_method in ['lora', 'qlora']:
                 model_config = self.get_model_config(model_id, use_qlora=(training_method == 'qlora'))
                 
@@ -160,24 +227,44 @@ class Trainer:
                     trust_remote_code=True
                 )
             
-            tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-            
-            # Then load and prepare data
+            # Load dataset configurations
             all_data = []
             for dataset_path in datasets:
-                with open(dataset_path, 'r') as f:
-                    dataset_name = Path(dataset_path).stem
-                    config_path = CONFIG_DIR / f"{dataset_name}.config.json"
-                    
+                dataset_name = Path(dataset_path).stem
+                config_path = CONFIG_DIR / f"{dataset_name}.config.json"
+                
+                logger.info(f"Loading config from: {config_path}")
+                
+                try:
                     with open(config_path, 'r') as cf:
                         dataset_config = json.load(cf)
+                        
+                    # Load and validate dataset
+                    dataset = self._load_and_validate_dataset(dataset_path, dataset_config)
                     
-                    data = json.load(f)
-                    for item in data:
-                        all_data.append({
-                            'input': item[dataset_config['inputField']],
-                            'output': item[dataset_config['outputField']]
-                        })
+                    input_field = dataset_config['input_field']
+                    output_field = dataset_config['output_field']
+                    
+                    # Process dataset entries
+                    for entry in dataset:
+                        if isinstance(entry, dict) and input_field in entry and output_field in entry:
+                            all_data.append({
+                                'input': str(entry[input_field]),
+                                'output': str(entry[output_field])
+                            })
+                        else:
+                            logger.warning(f"Skipping invalid entry: {entry}")
+                            
+                    logger.info(f"Processed {len(all_data)} valid entries from {dataset_path}")
+                            
+                except Exception as e:
+                    logger.error(f"Error processing dataset {dataset_path}: {str(e)}")
+                    raise
+                
+            if not all_data:
+                raise ValueError("No valid training data found in datasets")
+                
+            logger.info(f"Total valid entries for training: {len(all_data)}")
             
             # Shuffle and split data
             random.shuffle(all_data)
@@ -187,30 +274,37 @@ class Trainer:
             
             logger.info(f"Dataset split: {len(train_data)} training samples, {len(val_data)} validation samples")
             
-            # Create datasets after tokenizer is loaded
+            # Create datasets with loaded tokenizer
             train_dataset = CustomDataset(train_data, tokenizer)
             val_dataset = CustomDataset(val_data, tokenizer)
             
             train_dataloader = DataLoader(
                 train_dataset,
-                batch_size=params.get('batchSize', BATCH_SIZE),
+                batch_size=batch_size,
                 shuffle=True
             )
             
             val_dataloader = DataLoader(
                 val_dataset,
-                batch_size=params.get('batchSize', BATCH_SIZE),
+                batch_size=batch_size,
                 shuffle=False
             )
+            
+            # Move model to device explicitly
+            model = model.to(self.device)
             
             # Training setup
             optimizer = torch.optim.AdamW(
                 model.parameters(),
-                lr=params.get('learningRate', 0.0001)
+                lr=learning_rate
             )
             
-            num_epochs = params.get('epochs', 3)
-            total_steps = len(train_dataloader) * num_epochs
+            total_training_steps = len(train_dataloader) * num_epochs
+            total_validation_steps = len(val_dataloader) * num_epochs
+            total_steps = total_training_steps + total_validation_steps
+            current_step = 0
+            
+            logger.info(f"Total steps: {total_steps} (Training: {total_training_steps}, Validation: {total_validation_steps})")
             
             scheduler = get_linear_schedule_with_warmup(
                 optimizer,
@@ -218,26 +312,40 @@ class Trainer:
                 num_training_steps=total_steps
             )
             
+            # Initialize history at the start
+            self.training_status['history'] = []
+            
             # Training loop
             model.train()
             best_val_loss = float('inf')
             output_dir = model_path / 'finetuned'
-            output_dir.mkdir(exist_ok=True, parents=True)  # Ensure directory exists
+            output_dir.mkdir(exist_ok=True, parents=True)
             
             logger.info(f"Will save model to: {output_dir}")
+            logger.info(f"Using device: {self.device}")
             
             for epoch in range(num_epochs):
+                if self.should_stop:
+                    logger.info("Training cancelled")
+                    return
+
                 # Training phase
                 model.train()
                 train_loss = 0
                 for step, batch in enumerate(train_dataloader):
+                    if self.should_stop:
+                        logger.info("Training cancelled")
+                        return
+
+                    # Move batch to device
                     input_ids = batch['input_ids'].to(self.device)
                     attention_mask = batch['attention_mask'].to(self.device)
+                    labels = input_ids.clone()
                     
                     outputs = model(
                         input_ids=input_ids,
                         attention_mask=attention_mask,
-                        labels=input_ids
+                        labels=labels
                     )
                     
                     loss = outputs.loss
@@ -249,8 +357,10 @@ class Trainer:
                         scheduler.step()
                         optimizer.zero_grad()
                     
-                    # Update progress
-                    progress = ((epoch * len(train_dataloader) + step + 1) / (total_steps * num_epochs)) * 100
+                    current_step += 1
+                    # Update progress based on total steps
+                    progress = (current_step / total_steps) * 100
+                    
                     self.training_status.update({
                         'progress': round(progress, 2),
                         'loss': loss.item(),
@@ -264,27 +374,47 @@ class Trainer:
                 val_loss = 0
                 with torch.no_grad():
                     for batch in val_dataloader:
+                        if self.should_stop:
+                            logger.info("Training cancelled")
+                            return
+
                         input_ids = batch['input_ids'].to(self.device)
                         attention_mask = batch['attention_mask'].to(self.device)
+                        labels = input_ids.clone()
                         
                         outputs = model(
                             input_ids=input_ids,
                             attention_mask=attention_mask,
-                            labels=input_ids
+                            labels=labels
                         )
                         
                         val_loss += outputs.loss.item()
+                        current_step += 1
+                        progress = (current_step / total_steps) * 100
+                        self.training_status['progress'] = round(progress, 2)
                 
                 val_loss = val_loss / len(val_dataloader)
+                epoch_train_loss = train_loss / len(train_dataloader)
                 
-                # Update status with validation metrics
+                # Add metrics to history
+                epoch_metrics = {
+                    'epoch': epoch + 1,
+                    'train_loss': epoch_train_loss,
+                    'val_loss': val_loss,
+                    'timestamp': datetime.now().isoformat()
+                }
+                self.training_status['history'].append(epoch_metrics)
+                
+                # Update status with epoch completion
                 self.training_status.update({
                     'current_epoch': epoch + 1,
                     'total_epochs': num_epochs,
-                    'val_loss': val_loss
+                    'val_loss': val_loss,
+                    'train_loss': epoch_train_loss,
+                    'current_metrics': epoch_metrics  # Add current metrics for graph updates
                 })
                 
-                logger.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss/(step+1):.4f}, Val Loss: {val_loss:.4f}")
+                logger.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {epoch_train_loss:.4f}, Val Loss: {val_loss:.4f}")
                 
                 # Save best model
                 if val_loss < best_val_loss:

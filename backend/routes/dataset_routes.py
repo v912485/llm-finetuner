@@ -317,14 +317,22 @@ def save_dataset_config():
         # Create config directory if it doesn't exist
         CONFIG_DIR.mkdir(exist_ok=True)
         
-        # Save config file using the dataset filename without the extension
+        # Get base filename without extension
         dataset_name = Path(file_path).stem
         config_path = CONFIG_DIR / f"{dataset_name}.config.json"
         
         logger.info(f"Saving config to {config_path}")
         
+        # Save full configuration
+        full_config = {
+            'file_path': str(file_path),
+            'input_field': config['inputField'],
+            'output_field': config['outputField'],
+            'created_at': datetime.now().isoformat()
+        }
+        
         with open(config_path, 'w') as f:
-            json.dump(config, f, indent=2)
+            json.dump(full_config, f, indent=2)
             
         logger.info("Config saved successfully")
         
@@ -332,7 +340,7 @@ def save_dataset_config():
             "status": "success",
             "message": "Configuration saved successfully",
             "config_path": str(config_path),
-            "saved_config": config
+            "saved_config": full_config
         })
         
     except Exception as e:
