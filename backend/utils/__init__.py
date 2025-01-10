@@ -1,0 +1,1 @@
+from .device_info import get_device_info, DEVICE_INFO, ACCELERATOR_AVAILABLE 
