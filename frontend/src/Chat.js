@@ -156,9 +156,12 @@ function Chat() {
           value={message}
           onChange={(e) => setMessage(e.target.value)}
           placeholder="Type your message..."
-          disabled={!selectedModel || isLoading}
+          disabled={(!selectedModel && !selectedSavedModel) || isLoading}
         />
-        <button type="submit" disabled={!selectedModel || !message.trim() || isLoading}>
+        <button 
+          type="submit" 
+          disabled={(!selectedModel && !selectedSavedModel) || !message.trim() || isLoading}
+        >
           {isLoading ? 'Sending...' : 'Send'}
         </button>
       </form>
