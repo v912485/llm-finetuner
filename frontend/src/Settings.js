@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './Settings.css';
+import apiConfig from './config';
 
 function Settings() {
   const [apiKey, setApiKey] = useState('');
@@ -7,7 +8,7 @@ function Settings() {
 
   useEffect(() => {
     // Fetch current API key if it exists
-    fetch('http://localhost:5000/api/settings/huggingface_token')
+    fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.huggingfaceToken}`)
       .then(res => res.json())
       .then(data => {
         if (data.token) {
@@ -20,7 +21,7 @@ function Settings() {
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
-      const response = await fetch('http://localhost:5000/api/settings/huggingface_token', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.huggingfaceToken}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

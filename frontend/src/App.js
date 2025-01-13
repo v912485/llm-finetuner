@@ -4,6 +4,7 @@ import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
 import Chat from './Chat';
 import Settings from './Settings';
 import TrainingGraph from './components/TrainingGraph';
+import apiConfig from './config';
 
 const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) => {
   const [tempConfig, setTempConfig] = useState(currentConfig || {});
@@ -96,7 +97,7 @@ function App() {
   const [datasetConfigs, setDatasetConfigs] = useState({});
 
   useEffect(() => {
-    fetch('http://localhost:5000/api/settings/config')
+    fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.config}`)
       .then(res => res.json())
       .then(data => setConfig(data));
   }, []);
@@ -105,8 +106,8 @@ function App() {
     const fetchInitialData = async () => {
       try {
         const [availableResponse, downloadedResponse] = await Promise.all([
-          fetch('http://localhost:5000/api/models/available'),
-          fetch('http://localhost:5000/api/models/downloaded')
+          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.available}`),
+          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`)
         ]);
 
         const availableData = await availableResponse.json();
@@ -148,7 +149,7 @@ function App() {
   useEffect(() => {
     const fetchDownloadedDatasets = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/datasets/downloaded');
+        const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.downloaded}`);
         const data = await response.json();
         if (data.status === 'success') {
           setDownloadedDatasets(data.datasets);
@@ -190,7 +191,7 @@ function App() {
   useEffect(() => {
     const fetchConfigurations = async () => {
       try {
-        const response = await fetch('http://localhost:5000/api/datasets/configured');
+        const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.configured}`);
         const data = await response.json();
         if (data.status === 'success') {
           const configs = {};
@@ -222,7 +223,7 @@ function App() {
 
   const fetchConfiguredDatasets = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/datasets/configured');
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.configured}`);
       const data = await response.json();
       if (data.status === 'success') {
         const configs = {};
@@ -245,7 +246,7 @@ function App() {
     setError(prev => ({ ...prev, [modelId]: null }));
 
     try {
-      const response = await fetch('http://localhost:5000/api/models/download', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.download}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -285,7 +286,7 @@ function App() {
     formData.append('file', file);
 
     try {
-      const response = await fetch('http://localhost:5000/api/datasets/prepare', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.prepare}`, {
         method: 'POST',
         body: formData,
         onUploadProgress: (progressEvent) => {
@@ -333,7 +334,7 @@ function App() {
 
   const handleConfigUpdate = async (filePath, config) => {
     try {
-      const response = await fetch('http://localhost:5000/api/datasets/config', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.config}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -360,7 +361,7 @@ function App() {
 
   const handleConfigSave = async (filePath, config) => {
     try {
-      const response = await fetch('http://localhost:5000/api/datasets/config', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.config}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -430,7 +431,7 @@ function App() {
 
   const fetchDownloadedModels = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/models/downloaded');
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`);
       const data = await response.json();
       if (data.status === 'success') {
         setDownloadedModels(data.downloaded_models);
@@ -442,7 +443,7 @@ function App() {
 
   const fetchTrainingStatus = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/training/status');
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.status}`);
       const data = await response.json();
       if (data.status === 'success') {
         setTrainingStatus(data);
@@ -462,7 +463,7 @@ function App() {
 
     setIsTraining(true);
     try {
-      const response = await fetch('http://localhost:5000/api/training/start', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.start}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -528,7 +529,7 @@ function App() {
     }
 
     try {
-      const response = await fetch('http://localhost:5000/api/training/save', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.save}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -555,7 +556,7 @@ function App() {
 
   const fetchFileStructure = async (filePath) => {
     try {
-      const response = await fetch('http://localhost:5000/api/datasets/structure', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.structure}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -581,7 +582,7 @@ function App() {
   // Add cancel training function
   const cancelTraining = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/models/cancel-training', {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.cancelTraining}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

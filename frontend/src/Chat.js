@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import './Chat.css';
+import apiConfig from './config';
 
 function Chat() {
   const [models, setModels] = useState([]);
@@ -24,7 +25,7 @@ function Chat() {
 
   const fetchDownloadedModels = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/models/downloaded');
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`);
       const data = await response.json();
       if (data.status === 'success') {
         setModels(data.downloaded_models);
@@ -36,7 +37,7 @@ function Chat() {
 
   const fetchSavedModels = async () => {
     try {
-      const response = await fetch('http://localhost:5000/api/models/saved');
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`);
       const data = await response.json();
       if (data.status === 'success') {
         setSavedModels(data.saved_models);
