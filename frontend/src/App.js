@@ -726,7 +726,10 @@ function App() {
                                   if (configuredFiles.includes(dataset.path)) {
                                     setConfiguredFiles(prev => prev.filter(f => f !== dataset.path));
                                   } else {
-                                    handleConfigSave({ path: dataset.path, name: dataset.name });
+                                    handleConfigSave(dataset.path, {
+                                      inputField: '',
+                                      outputField: ''
+                                    });
                                   }
                                 }}
                               >
