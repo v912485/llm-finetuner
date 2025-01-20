@@ -110,8 +110,8 @@ class Trainer:
                 'start_time': datetime.now().isoformat(),
                 'model_id': config['model_id'],
                 'dataset_info': config['datasets'],
-                'current_epoch': 0,  # Initialize current epoch
-                'total_epochs': num_epochs,  # Set total epochs from config
+                'current_epoch': 1,  # Start at 1 instead of 0
+                'total_epochs': num_epochs,
                 'learning_rate': config.get('params', {}).get('learningRate', 0.0001)
             })
 
@@ -181,6 +181,17 @@ class Trainer:
             datasets = config['datasets']
             params = config.get('params', {})
             
+            # Force single GPU if specified
+            if params.get('force_single_gpu'):
+                gpu_index = params.get('gpu_index', 0)
+                if torch.cuda.is_available():
+                    torch.cuda.set_device(gpu_index)
+                    os.environ['CUDA_VISIBLE_DEVICES'] = str(gpu_index)
+                    self.device = torch.device(f'cuda:{gpu_index}')
+                    logger.info(f"Forcing use of GPU {gpu_index}: {torch.cuda.get_device_name(gpu_index)}")
+            else:
+                self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            
             # Get training parameters with defaults
             validation_split = float(params.get('validationSplit', 0.2))
             num_epochs = int(params.get('epochs', 3))
@@ -189,6 +200,7 @@ class Trainer:
             training_method = params.get('training_method', 'standard')
             
             logger.info(f"Training parameters:")
+            logger.info(f"- Device: {self.device}")
             logger.info(f"- Epochs: {num_epochs}")
             logger.info(f"- Batch size: {batch_size}")
             logger.info(f"- Learning rate: {learning_rate}")
@@ -211,7 +223,7 @@ class Trainer:
                 
                 model = AutoModelForCausalLM.from_pretrained(
                     model_path,
-                    device_map="auto",
+                    device_map=None,  # Disable auto device mapping
                     trust_remote_code=True,
                     **model_config.get('bnb_config', {})
                 )
@@ -223,9 +235,21 @@ class Trainer:
             else:
                 model = AutoModelForCausalLM.from_pretrained(
                     model_path,
-                    device_map="auto",
+                    device_map=None,  # Disable auto device mapping
                     trust_remote_code=True
                 )
+            
+            # Explicitly move model to device
+            model = model.to(self.device)
+            
+            # Enable gradient checkpointing if available
+            if hasattr(model, 'gradient_checkpointing_enable'):
+                model.gradient_checkpointing_enable()
+            
+            # Disable model parallelism
+            if hasattr(model, 'is_parallelizable'):
+                model.is_parallelizable = False
+                model.model_parallel = False
             
             # Load dataset configurations
             all_data = []
@@ -290,9 +314,6 @@ class Trainer:
                 shuffle=False
             )
             
-            # Move model to device explicitly
-            model = model.to(self.device)
-            
             # Training setup
             optimizer = torch.optim.AdamW(
                 model.parameters(),
@@ -332,19 +353,29 @@ class Trainer:
                 # Training phase
                 model.train()
                 train_loss = 0
+                
+                # Update current epoch at the start of each epoch (1-based indexing)
+                self.training_status.update({
+                    'current_epoch': epoch + 1,
+                    'total_epochs': num_epochs
+                })
+                
                 for step, batch in enumerate(train_dataloader):
                     if self.should_stop:
                         logger.info("Training cancelled")
                         return
 
-                    # Move batch to device
-                    input_ids = batch['input_ids'].to(self.device)
-                    attention_mask = batch['attention_mask'].to(self.device)
-                    labels = input_ids.clone()
+                    # Move batch to device and ensure it stays there
+                    batch = {k: v.to(self.device) for k, v in batch.items()}
+                    labels = batch['input_ids'].clone()
+                    
+                    # Clear CUDA cache periodically
+                    if step % 10 == 0 and torch.cuda.is_available():
+                        torch.cuda.empty_cache()
                     
                     outputs = model(
-                        input_ids=input_ids,
-                        attention_mask=attention_mask,
+                        input_ids=batch['input_ids'],
+                        attention_mask=batch['attention_mask'],
                         labels=labels
                     )
                     
@@ -353,6 +384,7 @@ class Trainer:
                     loss.backward()
                     
                     if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                         optimizer.step()
                         scheduler.step()
                         optimizer.zero_grad()
@@ -378,13 +410,13 @@ class Trainer:
                             logger.info("Training cancelled")
                             return
 
-                        input_ids = batch['input_ids'].to(self.device)
-                        attention_mask = batch['attention_mask'].to(self.device)
-                        labels = input_ids.clone()
+                        # Move batch to device and ensure it stays there
+                        batch = {k: v.to(self.device) for k, v in batch.items()}
+                        labels = batch['input_ids'].clone()
                         
                         outputs = model(
-                            input_ids=input_ids,
-                            attention_mask=attention_mask,
+                            input_ids=batch['input_ids'],
+                            attention_mask=batch['attention_mask'],
                             labels=labels
                         )
                         
@@ -398,7 +430,7 @@ class Trainer:
                 
                 # Add metrics to history
                 epoch_metrics = {
-                    'epoch': epoch + 1,
+                    'epoch': epoch + 1,  # Use 1-based epoch numbering
                     'train_loss': epoch_train_loss,
                     'val_loss': val_loss,
                     'timestamp': datetime.now().isoformat()
@@ -407,11 +439,11 @@ class Trainer:
                 
                 # Update status with epoch completion
                 self.training_status.update({
-                    'current_epoch': epoch + 1,
+                    'current_epoch': epoch + 1,  # Use 1-based epoch numbering
                     'total_epochs': num_epochs,
                     'val_loss': val_loss,
                     'train_loss': epoch_train_loss,
-                    'current_metrics': epoch_metrics  # Add current metrics for graph updates
+                    'current_metrics': epoch_metrics
                 })
                 
                 logger.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {epoch_train_loss:.4f}, Val Loss: {val_loss:.4f}")

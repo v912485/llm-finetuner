@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from training.trainer_instance import trainer  # Import shared trainer
+from training.trainer import Trainer
 import logging
 import json
 from datetime import datetime
@@ -9,6 +9,9 @@ import shutil
 
 bp = Blueprint('training', __name__, url_prefix='/api/training')
 logger = logging.getLogger('training')
+
+# Initialize trainer
+trainer = Trainer()
 
 @bp.route('/start', methods=['POST'])
 def start_training():
@@ -32,7 +35,7 @@ def start_training():
         }), 400
     
     try:
-        trainer.start_training(data)  # Use shared trainer
+        trainer.start_training(data)
         logger.info("Training started successfully")
         return jsonify({
             "status": "success",
@@ -48,17 +51,16 @@ def start_training():
 @bp.route('/status', methods=['GET'])
 def get_training_status():
     try:
-        status = trainer.get_status()
         return jsonify({
-            "status": "success",
-            **status
+            'status': 'success',
+            **trainer.get_status()
         })
     except Exception as e:
         logger.error(f"Error getting training status: {str(e)}")
         return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500 
+            'status': 'error',
+            'message': str(e)
+        }), 500
 
 @bp.route('/save', methods=['POST'])
 def save_model():
@@ -127,4 +129,19 @@ def save_model():
         return jsonify({
             "status": "error",
             "message": str(e)
+        }), 500
+
+@bp.route('/cancel', methods=['POST'])
+def cancel_training():
+    try:
+        trainer.cancel_training()
+        return jsonify({
+            'status': 'success',
+            'message': 'Training cancelled'
+        })
+    except Exception as e:
+        logger.error(f"Error cancelling training: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e)
         }), 500 

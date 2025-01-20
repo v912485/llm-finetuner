@@ -476,7 +476,9 @@ function App() {
             batchSize: finetuningParams.batchSize,
             epochs: finetuningParams.epochs,
             validationSplit: finetuningParams.validationSplit,
-            training_method: trainingMethod
+            training_method: trainingMethod,
+            force_single_gpu: true,
+            gpu_index: 0
           }
         }),
       });
