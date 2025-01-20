@@ -83,6 +83,33 @@
           "cpu": 1
         }
       }
+    },
+    {
+      "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
+      "name": "DeepSeek-R1-Distill-Qwen-14B",
+      "size": "large",
+      "description": "14B parameters, distilled model",
+      "supports_lora": true,
+      "requirements": {
+        "min_gpu_memory": {
+          "standard": "28GB",
+          "lora": "14GB",
+          "qlora": "7GB"
+        },
+        "recommended_batch_size": {
+          "cuda": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "rocm": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "cpu": 1
+        }
+      }
     }
   ],
   "supported_backends": {

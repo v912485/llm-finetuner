@@ -2,19 +2,23 @@ import json
 import os
 from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from config.settings import MODELS_DIR
+from config.settings import MODELS_DIR, HF_TOKEN
 import logging
 from flask import jsonify
 from training.trainer_instance import trainer
+import torch
 
 logger = logging.getLogger('training')
 
 class ModelManager:
     def __init__(self):
         self.config_path = Path(__file__).parent.parent / 'config.json'
-        self.hf_token = os.environ.get('HUGGING_FACE_TOKEN')
+        self.hf_token = HF_TOKEN  # Use token from settings
         self.trainer = trainer
         self.available_models = self.get_available_models()
+        
+        if not self.hf_token:
+            logger.warning("No Hugging Face token found. Some models may not be accessible.")
         
     def load_config(self):
         try:
@@ -48,38 +52,61 @@ class ModelManager:
             return {"status": "error", "message": str(e)}
             
     def download_model(self, model_id):
+        """Download a model from Hugging Face"""
         try:
+            if not self.hf_token:
+                return jsonify({
+                    "status": "error",
+                    "message": "Hugging Face token not found in environment variables"
+                }), 401
+
+            logger.info(f"Starting download of model: {model_id}")
+            
+            # Create models directory if it doesn't exist
+            MODELS_DIR.mkdir(exist_ok=True)
+            
+            # Convert model ID to safe directory name
             safe_dir_name = model_id.replace('/', '_')
             model_path = MODELS_DIR / safe_dir_name
             
-            # Add token for gated models
-            auth_token = self.hf_token if 'google/gemma' in model_id else None
-            
-            model = AutoModelForCausalLM.from_pretrained(
-                model_id,
-                device_map="auto",
-                trust_remote_code=True,
-                token=auth_token
-            )
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_id,
-                trust_remote_code=True,
-                token=auth_token
-            )
-            
-            model_path.mkdir(exist_ok=True, parents=True)
-            model.save_pretrained(model_path)
-            tokenizer.save_pretrained(model_path)
-            
-            return jsonify({
-                "status": "success",
-                "message": f"Model {model_id} downloaded successfully"
-            })
+            # Download model and tokenizer
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(
+                    model_id,
+                    token=self.hf_token,
+                    trust_remote_code=True
+                )
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_id,
+                    token=self.hf_token,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float32  # Start with float32 for compatibility
+                )
+                
+                # Save model and tokenizer
+                model.save_pretrained(model_path)
+                tokenizer.save_pretrained(model_path)
+                
+                logger.info(f"Successfully downloaded model to {model_path}")
+                
+                return jsonify({
+                    "status": "success",
+                    "message": "Model downloaded successfully"
+                })
+                
+            except Exception as e:
+                logger.error(f"Error downloading model: {str(e)}")
+                return jsonify({
+                    "status": "error",
+                    "message": f"Failed to download model: {str(e)}"
+                }), 500
+                
         except Exception as e:
+            logger.error(f"Error in download_model: {str(e)}")
             return jsonify({
                 "status": "error",
-                "message": f"Failed to download model: {str(e)}"
-            }), 500 
+                "message": str(e)
+            }), 500
             
     def cancel_training(self):
         """Cancel ongoing training"""

@@ -2,6 +2,10 @@ import os
 import logging
 from datetime import datetime
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Directory configuration
 BASE_DIR = Path(__file__).parent.parent
@@ -21,6 +25,11 @@ BATCH_SIZE = 8
 
 # Add SAVED_MODELS_DIR to settings
 SAVED_MODELS_DIR = MODELS_DIR / 'saved_models'
+
+# Environment variables
+HF_TOKEN = os.getenv('HUGGING_FACE_TOKEN')
+if not HF_TOKEN:
+    logging.warning("HUGGING_FACE_TOKEN not found in environment variables")
 
 def setup_logging():
     # Create logs directory if it doesn't exist
