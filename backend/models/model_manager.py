@@ -112,4 +112,58 @@ class ModelManager:
         """Cancel ongoing training"""
         if not self.trainer.is_training():
             raise ValueError("No training in progress")
-        self.trainer.cancel_training() 
+        self.trainer.cancel_training()
+
+    def generate_response(self, model_id, input_text, temperature=0.7, max_length=512, top_p=0.95):
+        """Generate a response using the specified model with OpenAI-compatible parameters"""
+        try:
+            # Convert model ID to safe directory name
+            safe_dir_name = model_id.replace('/', '_')
+            model_path = MODELS_DIR / safe_dir_name
+            
+            if not model_path.exists():
+                raise ValueError(f"Model {model_id} not found. Please download it first.")
+            
+            # Load model and tokenizer
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map=None,  # Disable auto device mapping
+                trust_remote_code=True,
+                torch_dtype=torch.float32
+            )
+            
+            # Move model to device
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model = model.to(device)
+            
+            # Tokenize input
+            inputs = tokenizer(input_text, return_tensors="pt").to(device)
+            
+            # Generate response
+            with torch.no_grad():
+                outputs = model.generate(
+                    **inputs,
+                    max_length=max_length,
+                    do_sample=True,
+                    temperature=temperature,
+                    top_p=top_p,
+                    pad_token_id=tokenizer.eos_token_id,
+                    num_return_sequences=1
+                )
+            
+            # Decode response
+            response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+            
+            # Remove the input prompt from the response
+            if response.startswith(input_text):
+                response = response[len(input_text):]
+            
+            return response.strip()
+            
+        except Exception as e:
+            logger.error(f"Error generating response: {str(e)}")
+            raise 

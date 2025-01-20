@@ -12,19 +12,18 @@ BASE_DIR = Path(__file__).parent.parent
 MODELS_DIR = BASE_DIR / "downloaded_models"
 DATASETS_DIR = BASE_DIR / "datasets"
 CONFIG_DIR = BASE_DIR / "dataset_configs"
+SAVED_MODELS_DIR = BASE_DIR / "saved_models"
 
 # Create directories
 MODELS_DIR.mkdir(exist_ok=True)
 DATASETS_DIR.mkdir(exist_ok=True)
 CONFIG_DIR.mkdir(exist_ok=True)
+SAVED_MODELS_DIR.mkdir(exist_ok=True)
 
 # Training settings
 GRADIENT_ACCUMULATION_STEPS = 8
 MAX_LENGTH = 128
 BATCH_SIZE = 8
-
-# Add SAVED_MODELS_DIR to settings
-SAVED_MODELS_DIR = MODELS_DIR / 'saved_models'
 
 # Environment variables
 HF_TOKEN = os.getenv('HUGGING_FACE_TOKEN')

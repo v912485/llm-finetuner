@@ -5,6 +5,7 @@ from config.settings import MODELS_DIR, SAVED_MODELS_DIR
 import logging
 import torch
 import json
+from datetime import datetime
 
 bp = Blueprint('models', __name__, url_prefix='/api/models')
 logger = logging.getLogger('training')
@@ -48,11 +49,18 @@ def run_inference():
         use_finetuned = data.get('use_finetuned', False)
         saved_model_name = data.get('saved_model_name')
         
-        if not model_id or not input_text:
-            logger.error(f"Missing required fields. model_id: {model_id}, input: {input_text}")
+        if not input_text:
+            logger.error("Missing input text")
             return jsonify({
                 "status": "error",
-                "message": "Model ID and input text are required"
+                "message": "Input text is required"
+            }), 400
+            
+        if not model_id and not saved_model_name:
+            logger.error("Neither model_id nor saved_model_name provided")
+            return jsonify({
+                "status": "error",
+                "message": "Either model_id or saved_model_name is required"
             }), 400
             
         # Get model path and load model/tokenizer
@@ -201,4 +209,160 @@ def cancel_training():
         return jsonify({
             "status": "error",
             "message": str(e)
+        }), 500 
+
+@bp.route('/v1/chat/completions', methods=['POST'])
+def chat_completions():
+    """OpenAI-compatible chat completions endpoint"""
+    try:
+        data = request.json
+        
+        # Extract OpenAI-style parameters
+        messages = data.get('messages', [])
+        if not messages:
+            return jsonify({
+                "error": {
+                    "message": "messages is required",
+                    "type": "invalid_request_error",
+                    "code": "invalid_messages"
+                }
+            }), 400
+            
+        # Get model parameters
+        model = data.get('model')  # This will be mapped to our model ID
+        temperature = float(data.get('temperature', 0.7))
+        max_tokens = int(data.get('max_tokens', 512))
+        top_p = float(data.get('top_p', 0.95))
+        
+        # Convert chat format to text
+        prompt = ""
+        for msg in messages:
+            role = msg.get('role', '')
+            content = msg.get('content', '')
+            if role == 'system':
+                prompt += f"System: {content}\n"
+            elif role == 'user':
+                prompt += f"User: {content}\n"
+            elif role == 'assistant':
+                prompt += f"Assistant: {content}\n"
+        prompt += "Assistant: "
+        
+        # Check if we're using a saved model
+        model_path = None
+        if model:
+            if SAVED_MODELS_DIR.exists():
+                saved_model_path = SAVED_MODELS_DIR / model
+                if saved_model_path.exists():
+                    model_path = saved_model_path
+                    logger.info(f"Using saved model: {model}")
+        
+        if not model_path:
+            # If not a saved model, treat as a regular model ID
+            safe_model_name = model.replace('/', '_')
+            model_path = MODELS_DIR / safe_model_name
+            logger.info(f"Using base model: {model}")
+        
+        if not model_path.exists():
+            return jsonify({
+                "error": {
+                    "message": f"Model not found at {model_path}",
+                    "type": "invalid_request_error",
+                    "code": "model_not_found"
+                }
+            }), 404
+            
+        # Load tokenizer and model
+        try:
+            tokenizer = AutoTokenizer.from_pretrained(
+                model_path,
+                trust_remote_code=True,
+                padding_side='left'
+            )
+            
+            if tokenizer.pad_token is None:
+                tokenizer.pad_token = tokenizer.eos_token
+            
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            model_instance = AutoModelForCausalLM.from_pretrained(
+                model_path,
+                device_map=device,
+                torch_dtype=torch.float16 if device.type == 'cuda' else torch.float32,
+                trust_remote_code=True
+            )
+            
+            model_instance.eval()
+            
+            # Tokenize and generate
+            inputs = tokenizer(
+                prompt,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=max_tokens // 2
+            ).to(device)
+            
+            with torch.no_grad():
+                outputs = model_instance.generate(
+                    **inputs,
+                    max_new_tokens=min(max_tokens, model_instance.config.max_position_embeddings - inputs['input_ids'].shape[1]),
+                    num_return_sequences=1,
+                    temperature=temperature,
+                    do_sample=True,
+                    top_p=top_p,
+                    pad_token_id=tokenizer.pad_token_id,
+                    eos_token_id=tokenizer.eos_token_id
+                )
+            
+            response = tokenizer.decode(
+                outputs[0],
+                skip_special_tokens=True,
+                clean_up_tokenization_spaces=True
+            )
+            
+            # Remove the prompt from the response
+            if response.startswith(prompt):
+                response = response[len(prompt):]
+            
+            # Format response in OpenAI style
+            completion_timestamp = int(datetime.now().timestamp())
+            return jsonify({
+                "id": f"chatcmpl-{completion_timestamp}",
+                "object": "chat.completion",
+                "created": completion_timestamp,
+                "model": model,
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": response.strip()
+                        },
+                        "finish_reason": "stop"
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": len(prompt.split()),
+                    "completion_tokens": len(response.split()),
+                    "total_tokens": len(prompt.split()) + len(response.split())
+                }
+            })
+            
+        except Exception as model_error:
+            logger.error(f"Model error: {str(model_error)}")
+            return jsonify({
+                "error": {
+                    "message": f"Error processing request: {str(model_error)}",
+                    "type": "model_error",
+                    "code": "model_error"
+                }
+            }), 500
+            
+    except Exception as e:
+        logger.error(f"Error in chat completion: {str(e)}")
+        return jsonify({
+            "error": {
+                "message": str(e),
+                "type": "server_error",
+                "code": "internal_error"
+            }
         }), 500 

@@ -7,7 +7,8 @@ const apiConfig = {
       download: '/models/download',
       inference: '/models/inference',
       saved: '/models/saved',
-      cancelTraining: '/models/cancel-training'
+      cancelTraining: '/models/cancel-training',
+      chatCompletions: '/models/v1/chat/completions'
     },
     datasets: {
       prepare: '/datasets/prepare',
@@ -19,7 +20,8 @@ const apiConfig = {
     training: {
       start: '/training/start',
       status: '/training/status',
-      save: '/training/save'
+      save: '/training/save',
+      cancel: '/training/cancel'
     },
     settings: {
       huggingfaceToken: '/settings/huggingface_token',
