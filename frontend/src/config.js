@@ -1,5 +1,5 @@
 const apiConfig = {
-  apiBaseUrl: process.env.REACT_APP_API_URL || 'http://localhost:5000/api',
+  apiBaseUrl: process.env.REACT_APP_API_URL || 'http://192.168.1.245:5000/api',
   endpoints: {
     models: {
       available: '/models/available',
