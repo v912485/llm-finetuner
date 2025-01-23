@@ -110,6 +110,33 @@
           "cpu": 1
         }
       }
+    },
+    {
+      "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+      "name": "DeepSeek-R1-Distill-Qwen-1.5B",
+      "size": "small",
+      "description": "1.5B parameters, distilled model",
+      "supports_lora": true,
+      "requirements": {
+        "min_gpu_memory": {
+          "standard": "4GB",
+          "lora": "2GB",
+          "qlora": "1GB"
+        },
+        "recommended_batch_size": {
+          "cuda": {
+            "standard": 4,
+            "lora": 8,
+            "qlora": 16
+          },
+          "rocm": {
+            "standard": 4,
+            "lora": 8,
+            "qlora": 16
+          },
+          "cpu": 1
+        }
+      }
     }
   ],
   "supported_backends": {
