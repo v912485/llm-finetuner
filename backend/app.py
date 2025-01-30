@@ -4,7 +4,14 @@ from routes import model_routes, training_routes, dataset_routes, settings_route
 from config.settings import setup_logging
 
 app = Flask(__name__)
-CORS(app)
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+        "allow_headers": ["Content-Type", "Authorization"],
+        "supports_credentials": True
+    }
+})
 
 # Set up logging
 logger = setup_logging()

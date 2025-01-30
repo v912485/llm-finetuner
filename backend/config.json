@@ -3,7 +3,9 @@
     {
       "id": "google/gemma-2b-it",
       "name": "Gemma 2B-IT",
-      "size": "medium",
+      "size_category": "medium",
+      "parameters": "2B",
+      "storage_size": "5.2GB",
       "description": "2B parameters, instruction-tuned",
       "supports_lora": true,
       "requirements": {
@@ -23,48 +25,6 @@
             "lora": 2,
             "qlora": 4
           },
-          "cpu": 1
-        }
-      }
-    },
-    {
-      "id": "gpt2",
-      "name": "GPT-2",
-      "size": "small",
-      "description": "117M parameters",
-      "supports_lora": true,
-      "requirements": {
-        "min_gpu_memory": {
-          "standard": "4GB",
-          "lora": "2GB",
-          "qlora": "1GB"
-        },
-        "recommended_batch_size": {
-          "cuda": {
-            "standard": 4,
-            "lora": 8,
-            "qlora": 16
-          },
-          "rocm": {
-            "standard": 4,
-            "lora": 8,
-            "qlora": 16
-          },
-          "cpu": 1
-        }
-      }
-    },
-    {
-      "id": "gpt2-medium",
-      "name": "GPT-2 Medium",
-      "size": "medium",
-      "description": "345M parameters",
-      "supports_lora": true,
-      "requirements": {
-        "min_gpu_memory": "8GB",
-        "recommended_batch_size": {
-          "cuda": 2,
-          "rocm": 2,
           "cpu": 1
         }
       }
@@ -137,6 +97,66 @@
           "cpu": 1
         }
       }
+    },
+    {
+      "id": "microsoft/phi-4",
+      "name": "Phi 4",
+      "size_category": "medium",
+      "parameters": "14.7B",
+      "storage_size": "29.3GB",
+      "description": "No description available",
+      "supports_lora": true,
+      "requirements": {
+        "min_gpu_memory": {
+          "standard": "16GB",
+          "lora": "8GB",
+          "qlora": "4GB"
+        },
+        "recommended_batch_size": {
+          "cuda": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "rocm": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "cpu": 1
+        }
+      },
+      "custom": true
+    },
+    {
+      "id": "openai-community/gpt2",
+      "name": "GPT 2",
+      "size_category": "medium",
+      "parameters": "137.0M",
+      "storage_size": "13.6GB",
+      "description": "No description available",
+      "supports_lora": true,
+      "requirements": {
+        "min_gpu_memory": {
+          "standard": "16GB",
+          "lora": "8GB",
+          "qlora": "4GB"
+        },
+        "recommended_batch_size": {
+          "cuda": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "rocm": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "cpu": 1
+        }
+      },
+      "custom": true
     }
   ],
   "supported_backends": {
@@ -161,4 +181,4 @@
       "memory_requirement": "low"
     }
   }
-} 
+}

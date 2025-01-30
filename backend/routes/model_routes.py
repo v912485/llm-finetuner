@@ -6,6 +6,9 @@ import logging
 import torch
 import json
 from datetime import datetime
+from pathlib import Path
+from huggingface_hub import model_info
+import requests
 
 bp = Blueprint('models', __name__, url_prefix='/api/models')
 logger = logging.getLogger('training')
@@ -366,3 +369,180 @@ def chat_completions():
                 "code": "internal_error"
             }
         }), 500 
+
+@bp.route('/add', methods=['POST', 'OPTIONS'])
+def add_model():
+    if request.method == 'OPTIONS':
+        return _build_cors_preflight_response()
+    try:
+        data = request.json
+        model_id = data.get('model_id')
+        
+        if not model_id:
+            return jsonify({
+                "status": "error",
+                "message": "Model ID is required"
+            }), 400
+
+        # Fetch model info from Huggingface API
+        headers = {}
+        if model_manager.hf_token:
+            headers["Authorization"] = f"Bearer {model_manager.hf_token}"
+            
+        response = requests.get(
+            f"https://huggingface.co/api/models/{model_id}",
+            headers=headers
+        )
+        response.raise_for_status()
+        model_data = response.json()
+
+        # Get parameter count
+        parameters = model_data.get('safetensors', {}).get('total')
+        if not parameters:
+            # Fallback to config-based estimation
+            config = model_data.get('config', {})
+            if config.get('architectures') == ['GPT2LMHeadModel']:
+                n_layer = config.get('n_layer', 12)
+                n_embd = config.get('n_embd', 768)
+                parameters = 12 * n_layer * (12 * n_embd**2 + 13 * n_embd)
+            elif 'llama' in model_id.lower():
+                hidden_size = config.get('hidden_size', 4096)
+                num_hidden_layers = config.get('num_hidden_layers', 32)
+                parameters = (hidden_size * num_hidden_layers * 6 * 1024)
+
+        # Format parameters
+        if parameters:
+            if parameters >= 1e9:
+                param_str = f"{parameters/1e9:.1f}B"
+            elif parameters >= 1e6:
+                param_str = f"{parameters/1e6:.1f}M"
+            else:
+                param_str = f"{parameters/1e3:.1f}K"
+        else:
+            param_str = "Unknown"
+
+        # Get storage size
+        storage_bytes = model_data.get('usedStorage')
+        if storage_bytes:
+            if storage_bytes >= 1e9:
+                storage_size = f"{storage_bytes / 1e9:.1f}GB"
+            elif storage_bytes >= 1e6:
+                storage_size = f"{storage_bytes / 1e6:.1f}MB"
+            else:
+                storage_size = f"{storage_bytes / 1e3:.1f}KB"
+        else:
+            # Fallback to calculating from siblings
+            siblings = model_data.get('siblings', [])
+            total_size = sum(s.get('size', 0) for s in siblings)
+            if total_size >= 1e9:
+                storage_size = f"{total_size / 1e9:.1f}GB"
+            elif total_size >= 1e6:
+                storage_size = f"{total_size / 1e6:.1f}MB"
+            else:
+                storage_size = f"{total_size / 1e3:.1f}KB"
+
+        # Get display name
+        display_name = data.get('display_name', '')
+        model_name = display_name or model_data['id'].split('/')[-1].replace('-', ' ').title()
+
+        # Build model configuration
+        new_model = {
+            "id": model_id,
+            "name": model_name,
+            "size_category": "medium",
+            "parameters": param_str or "Unknown",
+            "storage_size": storage_size or "Unknown",
+            "description": (model_data.get('description', '')[:100] if model_data else '') or "No description available",
+            "supports_lora": True,
+            "requirements": {
+                "min_gpu_memory": {
+                    "standard": "16GB",
+                    "lora": "8GB",
+                    "qlora": "4GB"
+                },
+                "recommended_batch_size": {
+                    "cuda": {
+                        "standard": 1,
+                        "lora": 2,
+                        "qlora": 4
+                    },
+                    "rocm": {
+                        "standard": 1,
+                        "lora": 2,
+                        "qlora": 4
+                    },
+                    "cpu": 1
+                }
+            },
+            "custom": True  # Mark as custom model
+        }
+
+        # Update config.json
+        config_path = Path(__file__).parent.parent / 'config.json'
+        with open(config_path, 'r+') as f:
+            config = json.load(f)
+            if any(m['id'] == model_id for m in config['models']):
+                return jsonify({
+                    "status": "error",
+                    "message": "Model already exists"
+                }), 400
+                
+            config['models'].append(new_model)
+            f.seek(0)
+            json.dump(config, f, indent=2)
+            f.truncate()
+
+        return jsonify({
+            "status": "success",
+            "message": "Model added successfully",
+            "model": new_model
+        })
+        
+    except Exception as e:
+        logger.error(f"Error adding model: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@bp.route('/delete/<path:model_id>', methods=['DELETE', 'OPTIONS'])
+def delete_model(model_id):
+    if request.method == 'OPTIONS':
+        return _build_cors_preflight_response()
+    try:
+        config_path = Path(__file__).parent.parent / 'config.json'
+        with open(config_path, 'r+') as f:
+            config = json.load(f)
+            new_models = [m for m in config['models'] if m['id'] != model_id]
+            
+            if len(new_models) == len(config['models']):
+                return jsonify({
+                    "status": "error",
+                    "message": "Model not found"
+                }), 404
+                
+            config['models'] = new_models
+            f.seek(0)
+            json.dump(config, f, indent=2)
+            f.truncate()
+
+        return jsonify({
+            "status": "success",
+            "message": "Model deleted successfully"
+        })
+        
+    except Exception as e:
+        logger.error(f"Error deleting model: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500 
+
+def _build_cors_preflight_response():
+    response = jsonify()
+    response.headers.add("Access-Control-Allow-Origin", "*")
+    response.headers.add("Access-Control-Allow-Headers", 
+        "Origin, X-Requested-With, Content-Type, Accept, Authorization")
+    response.headers.add("Access-Control-Allow-Methods", 
+        "GET, POST, PUT, DELETE, OPTIONS")
+    return response 

@@ -95,6 +95,9 @@ function App() {
   const [saveName, setSaveName] = useState('');
   const [showSaveDialog, setShowSaveDialog] = useState(false);
   const [datasetConfigs, setDatasetConfigs] = useState({});
+  const [showAddModel, setShowAddModel] = useState(false);
+  const [newModelId, setNewModelId] = useState('');
+  const [newModelName, setNewModelName] = useState('');
 
   useEffect(() => {
     fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.config}`)
@@ -602,6 +605,56 @@ function App() {
     }
   };
 
+  const handleAddModel = async () => {
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.add}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ 
+          model_id: newModelId,
+          display_name: newModelName 
+        }),
+      });
+      
+      const data = await response.json();
+      if (data.status === 'success') {
+        setAvailableModels(prev => [...prev, data.model]);
+        setShowAddModel(false);
+        setNewModelId('');
+        setNewModelName('');
+      } else {
+        alert(data.message || 'Failed to add model');
+      }
+    } catch (error) {
+      console.error('Error adding model:', error);
+      alert('Error adding model');
+    }
+  };
+
+  const handleDeleteModel = async (modelId) => {
+    if (!window.confirm('Are you sure you want to delete this model?')) return;
+    
+    try {
+      const encodedModelId = encodeURIComponent(modelId);
+      const response = await fetch(
+        `${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.delete}/${encodedModelId}`,
+        { method: 'DELETE' }
+      );
+      
+      const data = await response.json();
+      if (data.status === 'success') {
+        setAvailableModels(prev => prev.filter(m => m.id !== modelId));
+      } else {
+        alert(data.message || 'Failed to delete model');
+      }
+    } catch (error) {
+      console.error('Error deleting model:', error);
+      alert('Error deleting model');
+    }
+  };
+
   return (
     <Router>
       <div className="App">
@@ -618,24 +671,14 @@ function App() {
               <h1>LLM Fine-tuning Interface</h1>
               
               <section className="model-selection">
-                <h2>1. Select Model</h2>
+                <div className="section-header">
+                  <h2>1. Select Model</h2>
+                </div>
                 <p className="selection-help">
                   {selectedModel 
                     ? "Selected model will be used for fine-tuning"
                     : "Select a downloaded model to use for fine-tuning"}
                 </p>
-                {selectedModel && (
-                  <p className="selected-model-info">
-                    Selected model for training: <strong>{selectedModel}</strong>
-                    <button 
-                      className="deselect-button"
-                      onClick={() => setSelectedModel(null)}
-                      title="Clear selection"
-                    >
-                      ✕
-                    </button>
-                  </p>
-                )}
                 <div className="models-grid">
                   {availableModels.map((model) => {
                     const isDownloaded = downloadedModels.includes(model.id);
@@ -646,7 +689,22 @@ function App() {
                       >
                         <div className="model-card-content">
                           <h3>{model.name}</h3>
-                          <p>Size: {model.size}</p>
+                          <div className="model-meta">
+                            <span className={`size-badge ${model.size_category?.toLowerCase() || 'medium'}`}>
+                              {(model.size_category || 'MEDIUM').toUpperCase()}
+                            </span>
+                            <span>Parameters: {model.parameters || 'Unknown'}</span>
+                            <span>Size: {model.storage_size || 'Unknown'}</span>
+                          </div>
+                          <p>{model.description}</p>
+                          {model.custom && (
+                            <button 
+                              className="delete-model-button"
+                              onClick={() => handleDeleteModel(model.id)}
+                            >
+                              Delete
+                            </button>
+                          )}
                           {isDownloaded && (
                             <div className="download-status">
                               <span className="status-icon">✓</span>
@@ -676,6 +734,14 @@ function App() {
                       </div>
                     );
                   })}
+                </div>
+                <div className="add-model-container">
+                  <button 
+                    className="add-model-button"
+                    onClick={() => setShowAddModel(true)}
+                  >
+                    Add New Model
+                  </button>
                 </div>
               </section>
 
@@ -1035,6 +1101,34 @@ function App() {
           } />
           <Route path="/settings" element={<Settings />} />
         </Routes>
+
+        {showAddModel && (
+          <div className="add-model-modal">
+            <div className="modal-content">
+              <h3>Add New Model</h3>
+              <input
+                type="text"
+                placeholder="Huggingface Model ID (e.g. google/gemma-2b-it)"
+                value={newModelId}
+                onChange={(e) => {
+                  setNewModelId(e.target.value);
+                  // Auto-fill display name with cleaned model ID
+                  setNewModelName(e.target.value.split('/').pop().replace(/-/g, ' '));
+                }}
+              />
+              <input
+                type="text"
+                placeholder="Display Name"
+                value={newModelName}
+                onChange={(e) => setNewModelName(e.target.value)}
+              />
+              <div className="modal-actions">
+                <button onClick={() => setShowAddModel(false)}>Cancel</button>
+                <button onClick={handleAddModel}>Add Model</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </Router>
   );

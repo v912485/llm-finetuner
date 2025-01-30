@@ -1,5 +1,5 @@
 const apiConfig = {
-  apiBaseUrl: process.env.REACT_APP_API_URL || 'http://192.168.1.245:5000/api',
+  apiBaseUrl: process.env.REACT_APP_API_URL || 'http://localhost:5000/api',
   endpoints: {
     models: {
       available: '/models/available',
@@ -8,7 +8,9 @@ const apiConfig = {
       inference: '/models/inference',
       saved: '/models/saved',
       cancelTraining: '/models/cancel-training',
-      chatCompletions: '/models/v1/chat/completions'
+      chatCompletions: '/models/v1/chat/completions',
+      add: '/models/add',
+      delete: '/models/delete'
     },
     datasets: {
       prepare: '/datasets/prepare',
