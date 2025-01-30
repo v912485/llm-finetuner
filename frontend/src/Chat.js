@@ -191,11 +191,11 @@ function Chat() {
                 </div>
                 <div className="generation-params">
                     <div className="chat-param-group">
-                        <label>Temperature:</label>
+                        <label>Temperature: {temperature}</label>
                         <input
-                            type="number"
+                            type="range"
                             min="0"
-                            max="2"
+                            max="1"
                             step="0.1"
                             value={temperature}
                             onChange={(e) => setTemperature(parseFloat(e.target.value))}

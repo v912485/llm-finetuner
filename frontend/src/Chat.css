@@ -252,7 +252,9 @@
 }
 
 .messages-container {
-  flex: 1;
+  min-height: 100px;
+  max-height: 50vh;
+  height: auto;
   overflow-y: auto;
   padding: 20px;
   background-color: white;
@@ -261,6 +263,8 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
+  margin-bottom: 20px;
+  flex: none;
 }
 
 .input-form {
@@ -312,4 +316,36 @@
   .generation-params {
     flex-direction: column;
   }
-} 
+}
+
+/* Add these styles */
+input[type="range"] {
+  width: 200px;
+  height: 4px;
+  background: #ddd;
+  border-radius: 2px;
+  outline: none;
+  -webkit-appearance: none;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 16px;
+  height: 16px;
+  background: #007bff;
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: #007bff;
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+input[type="range"]:hover::-webkit-slider-thumb {
+  background: #0056b3;
+}
