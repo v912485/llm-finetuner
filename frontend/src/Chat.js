@@ -12,7 +12,7 @@ function Chat() {
     const [savedModels, setSavedModels] = useState([]);
     const [useOpenAIFormat, setUseOpenAIFormat] = useState(true);
     const [temperature, setTemperature] = useState(0.7);
-    const [maxTokens, setMaxTokens] = useState(512);
+    const [maxTokens, setMaxTokens] = useState(4096);
     const [error, setError] = useState(null);
     const messagesEndRef = useRef(null);
 
@@ -71,7 +71,7 @@ function Chat() {
         setInput('');
         setIsLoading(true);
         setError(null);
-
+        
         try {
             let response;
             // Check if we're using a saved model
@@ -91,12 +91,12 @@ function Chat() {
                 console.log('OpenAI format request body:', requestBody);
 
                 response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.chatCompletions}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
                     body: JSON.stringify(requestBody),
-                });
+            });
                 const data = await response.json();
                 if (data.error) {
                     throw new Error(data.error.message);
@@ -131,7 +131,7 @@ function Chat() {
                     throw new Error(data.message);
                 }
                 setMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
-            }
+                        }
         } catch (error) {
             console.error('Error:', error);
             setError(error.message);
@@ -206,7 +206,7 @@ function Chat() {
                         <input
                             type="number"
                             min="1"
-                            max="2048"
+                            max="4096"
                             value={maxTokens}
                             onChange={(e) => setMaxTokens(parseInt(e.target.value))}
                         />
@@ -215,6 +215,19 @@ function Chat() {
             </div>
 
             <div className="messages-container">
+                <div className="messages-header">
+                    <h3>Chat History</h3>
+                    <button 
+                        className="clear-history-button"
+                        onClick={() => {
+                            setMessages([]);
+                            setError(null);
+                        }}
+                        disabled={messages.length === 0 && !error}
+                    >
+                        Clear History
+                    </button>
+                </div>
                 {messages.map((message, index) => (
                     <div 
                         key={index} 
@@ -227,7 +240,7 @@ function Chat() {
                 {isLoading && (
                     <div className="message assistant">
                         <div className="message-role">assistant:</div>
-                        <div className="message-content loading">Thinking...</div>
+                        <div className="message-content thinking">Thinking</div>
                     </div>
                 )}
                 {error && (

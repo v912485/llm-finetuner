@@ -59,6 +59,9 @@ def run_inference():
                 "message": "Input text is required"
             }), 400
             
+        # Add prompt logging here
+        logger.info(f"Full prompt for inference:\n{input_text}")
+        
         if not model_id and not saved_model_name:
             logger.error("Neither model_id nor saved_model_name provided")
             return jsonify({
@@ -249,6 +252,9 @@ def chat_completions():
             elif role == 'assistant':
                 prompt += f"Assistant: {content}\n"
         prompt += "Assistant: "
+        
+        # Add prompt logging here
+        logger.info(f"Full chat completion prompt:\n{prompt}")
         
         # Check if we're using a saved model
         model_path = None
