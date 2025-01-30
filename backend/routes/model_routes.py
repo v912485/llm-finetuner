@@ -414,12 +414,16 @@ def add_model():
         if parameters:
             if parameters >= 1e9:
                 param_str = f"{parameters/1e9:.1f}B"
+                size_category = "medium" if parameters < 10e9 else "large"
             elif parameters >= 1e6:
                 param_str = f"{parameters/1e6:.1f}M"
+                size_category = "small"
             else:
                 param_str = f"{parameters/1e3:.1f}K"
+                size_category = "small"
         else:
             param_str = "Unknown"
+            size_category = "medium"  # Default to medium if unknown
 
         # Get storage size
         storage_bytes = model_data.get('usedStorage')
@@ -449,7 +453,7 @@ def add_model():
         new_model = {
             "id": model_id,
             "name": model_name,
-            "size_category": "medium",
+            "size_category": size_category,
             "parameters": param_str or "Unknown",
             "storage_size": storage_size or "Unknown",
             "description": (model_data.get('description', '')[:100] if model_data else '') or "No description available",

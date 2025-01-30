@@ -17,8 +17,9 @@ section {
   gap: 20px;
   overflow-x: auto;
   padding-bottom: 10px;
-  min-height: 300px;
+  min-height: 260px;
   flex-wrap: nowrap;
+  scroll-snap-type: x mandatory;
 }
 
 .models-grid::-webkit-scrollbar {
@@ -46,7 +47,12 @@ section {
   position: relative;
   display: flex;
   flex-direction: column;
-  min-height: 120px;
+  height: 250px;
+  width: 250px;
+  min-width: 250px;
+  max-width: 250px;
+  box-sizing: border-box;
+  scroll-snap-align: start;
 }
 
 .model-card-content {
@@ -69,17 +75,36 @@ section {
   margin: 10px 0;
 }
 
+.model-card-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: auto;
+}
+
 .model-card button {
-  padding: 8px 16px;
+  padding: 4px 8px;
   background-color: #007bff;
   color: white;
   border: none;
   border-radius: 4px;
   cursor: pointer;
   transition: background-color 0.3s ease;
-  margin-top: auto;
-  align-self: flex-start;
-  margin-left: 0;
+  font-size: 14px;
+  min-width: 80px;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  line-height: 1;
+}
+
+.delete-model-button {
+  background-color: #dc3545 !important;
+}
+
+.delete-model-button:hover {
+  background-color: #c82333 !important;
 }
 
 .model-card button:disabled {
@@ -477,16 +502,9 @@ input[type="file"] {
 }
 
 .select-model-button {
-  margin-top: 1rem;
-  padding: 8px 16px;
-  background-color: #007bff;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  transition: all 0.3s ease;
-  pointer-events: auto !important;
-  opacity: 1 !important;
+  margin-top: 0 !important;
+  padding: 4px 8px !important;
+  font-size: 14px !important;
 }
 
 .select-model-button:hover:not(.selected) {
@@ -1010,7 +1028,6 @@ input[type="file"] {
 }
 
 .add-model-container {
-  margin-top: 20px;
   display: flex;
   justify-content: flex-end;
 }
@@ -1057,28 +1074,19 @@ input[type="file"] {
   justify-content: flex-end;
 }
 
-.delete-model-button {
-  padding: 4px 8px;
-  background-color: #dc3545;
-  color: white;
-  border: none;
-  border-radius: 4px;
-  cursor: pointer;
-  margin-top: 10px;
-}
-
 .model-meta {
   display: flex;
   gap: 8px;
   margin: 8px 0;
   font-size: 0.9em;
   color: #666;
+  flex-direction: column;
+  align-items: flex-start;
 }
 
 .size-badge {
-  padding: 2px 6px;
-  border-radius: 4px;
-  font-weight: 500;
+  order: -1;
+  margin-bottom: 4px;
 }
 
 .size-badge.small {

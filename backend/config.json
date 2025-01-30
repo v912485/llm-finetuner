@@ -6,7 +6,6 @@
       "size_category": "medium",
       "parameters": "2B",
       "storage_size": "5.2GB",
-      "description": "2B parameters, instruction-tuned",
       "supports_lora": true,
       "requirements": {
         "min_gpu_memory": {
@@ -33,7 +32,6 @@
       "id": "facebook/opt-350m",
       "name": "OPT 350M",
       "size": "medium",
-      "description": "350M parameters",
       "supports_lora": true,
       "requirements": {
         "min_gpu_memory": "8GB",
@@ -48,7 +46,6 @@
       "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-14B",
       "name": "DeepSeek-R1-Distill-Qwen-14B",
       "size": "large",
-      "description": "14B parameters, distilled model",
       "supports_lora": true,
       "requirements": {
         "min_gpu_memory": {
@@ -75,7 +72,6 @@
       "id": "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
       "name": "DeepSeek-R1-Distill-Qwen-1.5B",
       "size": "small",
-      "description": "1.5B parameters, distilled model",
       "supports_lora": true,
       "requirements": {
         "min_gpu_memory": {
@@ -104,7 +100,6 @@
       "size_category": "medium",
       "parameters": "14.7B",
       "storage_size": "29.3GB",
-      "description": "No description available",
       "supports_lora": true,
       "requirements": {
         "min_gpu_memory": {
@@ -131,7 +126,7 @@
     {
       "id": "openai-community/gpt2",
       "name": "GPT 2",
-      "size_category": "medium",
+      "size_category": "small",
       "parameters": "137.0M",
       "storage_size": "13.6GB",
       "description": "No description available",

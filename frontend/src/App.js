@@ -696,38 +696,45 @@ function App() {
                             <span>Parameters: {model.parameters || 'Unknown'}</span>
                             <span>Size: {model.storage_size || 'Unknown'}</span>
                           </div>
-                          <p>{model.description}</p>
-                          {model.custom && (
-                            <button 
-                              className="delete-model-button"
-                              onClick={() => handleDeleteModel(model.id)}
-                            >
-                              Delete
-                            </button>
-                          )}
-                          {isDownloaded && (
-                            <div className="download-status">
-                              <span className="status-icon">✓</span>
-                              <span>Downloaded</span>
-                            </div>
+                        </div>
+                        <div className="model-card-actions">
+                          {isDownloaded ? (
+                            <>
+                              <button
+                                className={`select-model-button ${model.id === selectedModel ? 'selected' : ''}`}
+                                onClick={() => handleModelSelect(model.id)}
+                              >
+                                {model.id === selectedModel ? 'Selected for Training ✓' : 'Select for Training'}
+                              </button>
+                              {model.custom && (
+                                <button 
+                                  className="delete-model-button"
+                                  onClick={() => handleDeleteModel(model.id)}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => handleModelDownload(model.id)}
+                                disabled={loading[model.id]}
+                                className={loading[model.id] ? 'loading' : ''}
+                              >
+                                {loading[model.id] ? 'Downloading...' : 'Download'}
+                              </button>
+                              {model.custom && (
+                                <button 
+                                  className="delete-model-button"
+                                  onClick={() => handleDeleteModel(model.id)}
+                                >
+                                  Delete
+                                </button>
+                              )}
+                            </>
                           )}
                         </div>
-                        {isDownloaded ? (
-                          <button
-                            className={`select-model-button ${model.id === selectedModel ? 'selected' : ''}`}
-                            onClick={() => handleModelSelect(model.id)}
-                          >
-                            {model.id === selectedModel ? 'Selected for Training ✓' : 'Select for Training'}
-                          </button>
-                        ) : (
-                          <button
-                            onClick={() => handleModelDownload(model.id)}
-                            disabled={loading[model.id]}
-                            className={loading[model.id] ? 'loading' : ''}
-                          >
-                            {loading[model.id] ? 'Downloading...' : 'Download'}
-                          </button>
-                        )}
                         {error[model.id] && (
                           <p className="error-message">{error[model.id]}</p>
                         )}
