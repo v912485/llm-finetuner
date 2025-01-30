@@ -240,7 +240,12 @@ function Chat() {
                 {isLoading && (
                     <div className="message assistant">
                         <div className="message-role">assistant:</div>
-                        <div className="message-content thinking">Thinking</div>
+                        <div className="message-content thinking">
+                            Thinking
+                            <span className="dot">.</span>
+                            <span className="dot">.</span>
+                            <span className="dot">.</span>
+                        </div>
                     </div>
                 )}
                 {error && (
