@@ -1,65 +1,39 @@
 import React, { useState, useEffect, useRef } from 'react';
 import './Chat.css';
-import apiConfig from './config';
+import { useAppContext } from './context/AppContext';
+import ModelSelector from './components/ModelSelector';
 
 function Chat() {
+    const { api, fetchSavedModels } = useAppContext();
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [selectedBaseModel, setSelectedBaseModel] = useState('');
     const [selectedFineTunedModel, setSelectedFineTunedModel] = useState('');
-    const [downloadedModels, setDownloadedModels] = useState([]);
-    const [savedModels, setSavedModels] = useState([]);
     const [useOpenAIFormat, setUseOpenAIFormat] = useState(true);
     const [temperature, setTemperature] = useState(0.7);
     const [maxTokens, setMaxTokens] = useState(4096);
     const [error, setError] = useState(null);
     const messagesEndRef = useRef(null);
+    const modelsFetchedRef = useRef(false);
 
     // Get the currently active model
     const activeModel = selectedFineTunedModel || selectedBaseModel;
 
     useEffect(() => {
-        fetchAvailableModels();
-    }, []);
-
-    useEffect(() => {
         scrollToBottom();
     }, [messages]);
 
+    // Fetch saved models only once when component mounts
+    useEffect(() => {
+        if (!modelsFetchedRef.current) {
+            modelsFetchedRef.current = true;
+            fetchSavedModels();
+        }
+    }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-    };
-
-    const fetchAvailableModels = async () => {
-        try {
-            const [downloadedResponse, savedResponse] = await Promise.all([
-                fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`),
-                fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`)
-            ]);
-            
-            const downloadedData = await downloadedResponse.json();
-            const savedData = await savedResponse.json();
-            
-            console.log('Downloaded models response:', downloadedData);
-            console.log('Saved models response:', savedData);
-            
-            if (downloadedData.status === 'success') {
-                setDownloadedModels(downloadedData.downloaded_models || []);
-                if (downloadedData.downloaded_models?.length > 0) {
-                    setSelectedBaseModel(downloadedData.downloaded_models[0]);
-                }
-            }
-            
-            if (savedData.status === 'success') {
-                const savedModelsList = savedData.saved_models || [];
-                console.log('Saved models list:', savedModelsList);
-                setSavedModels(savedModelsList);
-            }
-        } catch (error) {
-            console.error('Error fetching models:', error);
-            setError('Failed to load available models');
-        }
     };
 
     const handleSubmit = async (e) => {
@@ -74,205 +48,191 @@ function Chat() {
         
         try {
             let response;
-            // Check if we're using a saved model
-            const savedModel = savedModels.find(model => model.path === activeModel);
-            console.log('Active model:', activeModel);
-            console.log('Saved models:', savedModels);
-            console.log('Found saved model:', savedModel);
-
+            
             if (useOpenAIFormat) {
                 const requestBody = {
-                    model: savedModel ? savedModel.name : activeModel,
+                    model: activeModel,
                     messages: [...messages, newMessage],
                     temperature: temperature,
                     max_tokens: maxTokens,
                 };
 
-                console.log('OpenAI format request body:', requestBody);
-
-                response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.chatCompletions}`, {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                    body: JSON.stringify(requestBody),
-            });
-                const data = await response.json();
-                if (data.error) {
-                    throw new Error(data.error.message);
-                }
-                setMessages(prev => [...prev, data.choices[0].message]);
-            } else {
-                const requestBody = savedModel 
-                    ? {
-                        saved_model_name: savedModel.name,
-                        input: input,
-                        temperature: temperature,
-                        max_length: maxTokens,
-                    }
-                    : {
-                        model_id: activeModel,
-                        input: input,
-                        temperature: temperature,
-                        max_length: maxTokens,
+                response = await api.post(
+                    '/models/v1/chat/completions', 
+                    requestBody
+                );
+                
+                console.log('Chat completions response:', response);
+                
+                if (response.status === 'success' && response.response) {
+                    const assistantMessage = {
+                        role: 'assistant',
+                        content: response.response.choices[0].message.content
                     };
-                
-                console.log('Standard format request body:', requestBody);
-                
-                response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.inference}`, {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify(requestBody),
-                });
-                const data = await response.json();
-                if (data.status === 'error') {
-                    throw new Error(data.message);
+                    setMessages(prev => [...prev, assistantMessage]);
+                } else if (response.choices && response.choices[0]?.message) {
+                    // Direct OpenAI format response
+                    const assistantMessage = {
+                        role: 'assistant',
+                        content: response.choices[0].message.content
+                    };
+                    setMessages(prev => [...prev, assistantMessage]);
+                } else {
+                    throw new Error(response.message || 'Failed to get response');
                 }
-                setMessages(prev => [...prev, { role: 'assistant', content: data.response }]);
-                        }
-        } catch (error) {
-            console.error('Error:', error);
-            setError(error.message);
+            } else {
+                const requestBody = {
+                    model_id: activeModel,
+                    prompt: input,
+                    temperature: temperature,
+                    max_tokens: maxTokens,
+                };
+
+                response = await api.post(
+                    '/models/inference', 
+                    requestBody
+                );
+                
+                console.log('Standard inference response:', response);
+                
+                if (response.status === 'success' && response.generated_text) {
+                    const assistantMessage = {
+                        role: 'assistant',
+                        content: response.generated_text
+                    };
+                    setMessages(prev => [...prev, assistantMessage]);
+                } else if (response.status === 'success' && response.response) {
+                    // Alternative response format
+                    const assistantMessage = {
+                        role: 'assistant',
+                        content: response.response
+                    };
+                    setMessages(prev => [...prev, assistantMessage]);
+                } else {
+                    throw new Error(response.message || 'Failed to get response');
+                }
+            }
+        } catch (err) {
+            console.error('Error during inference:', err);
+            setError(err.message || 'An error occurred during inference');
         } finally {
             setIsLoading(false);
         }
     };
 
+    const handleClearChat = () => {
+        setMessages([]);
+    };
+
     return (
         <div className="chat-container">
-            <div className="chat-settings">
-                <div className="model-selections">
-                    <div className="model-selection">
-                        <label>Base Model:</label>
-                        <select 
-                            value={selectedBaseModel} 
-                            onChange={(e) => {
-                                setSelectedBaseModel(e.target.value);
-                                setSelectedFineTunedModel(''); // Clear fine-tuned selection when base model is selected
-                            }}
-                        >
-                            <option value="">Select a model</option>
-                            {downloadedModels.map(model => (
-                                <option key={model} value={model}>{model}</option>
-                            ))}
-                        </select>
+            <div className="chat-sidebar">
+                <h2>Chat Settings</h2>
+                
+                <div className="model-selection">
+                    <ModelSelector
+                        selectedModel={selectedBaseModel}
+                        onModelSelect={setSelectedBaseModel}
+                        label="Base Model"
+                        includeSavedModels={false}
+                    />
+                    
+                    <ModelSelector
+                        selectedModel={selectedFineTunedModel}
+                        onModelSelect={setSelectedFineTunedModel}
+                        label="Fine-tuned Model"
+                        includeBaseModels={false}
+                    />
+                </div>
+                
+                <div className="chat-settings">
+                    <div className="setting-group">
+                        <label>
+                            <input
+                                type="checkbox"
+                                checked={useOpenAIFormat}
+                                onChange={(e) => setUseOpenAIFormat(e.target.checked)}
+                            />
+                            Use OpenAI Format
+                        </label>
                     </div>
-                    {savedModels.length > 0 && (
-                        <div className="model-selection">
-                            <label>Fine-tuned Model:</label>
-                            <select 
-                                value={selectedFineTunedModel} 
-                                onChange={(e) => {
-                                    setSelectedFineTunedModel(e.target.value);
-                                    setSelectedBaseModel(''); // Clear base model selection when fine-tuned is selected
-                                }}
-                            >
-                                <option value="">Select a fine-tuned model</option>
-                                {savedModels.map(model => (
-                                    <option key={model.path} value={model.path}>
-                                        {model.name} ({model.original_model})
-                                    </option>
-                                ))}
-                            </select>
-                        </div>
-                    )}
-                </div>
-                <div className="api-format-toggle">
-                    <label>
-                        <input
-                            type="checkbox"
-                            checked={useOpenAIFormat}
-                            onChange={(e) => setUseOpenAIFormat(e.target.checked)}
-                        />
-                        Use OpenAI Format
-                    </label>
-                </div>
-                <div className="generation-params">
-                    <div className="chat-param-group">
+                    
+                    <div className="setting-group">
                         <label>Temperature: {temperature}</label>
                         <input
                             type="range"
                             min="0"
-                            max="1"
+                            max="2"
                             step="0.1"
                             value={temperature}
                             onChange={(e) => setTemperature(parseFloat(e.target.value))}
                         />
                     </div>
-                    <div className="chat-param-group">
-                        <label>Max Tokens:</label>
+                    
+                    <div className="setting-group">
+                        <label>Max Tokens: {maxTokens}</label>
                         <input
-                            type="number"
+                            type="range"
                             min="1"
-                            max="4096"
+                            max="8192"
+                            step="1"
                             value={maxTokens}
                             onChange={(e) => setMaxTokens(parseInt(e.target.value))}
                         />
                     </div>
-                </div>
-            </div>
-
-            <div className="messages-container">
-                <div className="messages-header">
-                    <h3>Chat History</h3>
-                    <button 
-                        className="clear-history-button"
-                        onClick={() => {
-                            setMessages([]);
-                            setError(null);
-                        }}
-                        disabled={messages.length === 0 && !error}
-                    >
-                        Clear History
+                    
+                    <button className="clear-chat-btn" onClick={handleClearChat}>
+                        Clear Chat
                     </button>
                 </div>
-                {messages.map((message, index) => (
-                    <div 
-                        key={index} 
-                        className={`message ${message.role}`}
-                    >
-                        <div className="message-role">{message.role}:</div>
-                        <div className="message-content">{message.content}</div>
-                    </div>
-                ))}
-                {isLoading && (
-                    <div className="message assistant">
-                        <div className="message-role">assistant:</div>
-                        <div className="message-content thinking">
-                            Thinking
-                            <span className="dot">.</span>
-                            <span className="dot">.</span>
-                            <span className="dot">.</span>
-                        </div>
-                    </div>
-                )}
-                {error && (
-                    <div className="error-message">
-                        Error: {error}
-                    </div>
-                )}
-                <div ref={messagesEndRef} />
             </div>
-
-            <form onSubmit={handleSubmit} className="input-form">
-                <textarea
-                    value={input}
-                    onChange={(e) => setInput(e.target.value)}
-                    placeholder="Type your message..."
-                    disabled={isLoading}
-                    onKeyDown={(e) => {
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                            e.preventDefault();
-                            handleSubmit(e);
-                        }
-                    }}
-                />
-                <button type="submit" disabled={isLoading || !activeModel}>
-                    {isLoading ? 'Sending...' : 'Send'}
-                </button>
-            </form>
+            
+            <div className="chat-main">
+                <div className="chat-messages">
+                    {messages.length === 0 ? (
+                        <div className="empty-chat">
+                            <p>Select a model and start chatting!</p>
+                        </div>
+                    ) : (
+                        messages.map((msg, index) => (
+                            <div key={index} className={`message ${msg.role}`}>
+                                <div className="message-content">{msg.content}</div>
+                            </div>
+                        ))
+                    )}
+                    {isLoading && (
+                        <div className="message assistant loading">
+                            <div className="loading-indicator">
+                                <div className="dot"></div>
+                                <div className="dot"></div>
+                                <div className="dot"></div>
+                            </div>
+                        </div>
+                    )}
+                    {error && (
+                        <div className="error-message">
+                            <p>{error}</p>
+                        </div>
+                    )}
+                    <div ref={messagesEndRef} />
+                </div>
+                
+                <form className="chat-input" onSubmit={handleSubmit}>
+                    <input
+                        type="text"
+                        value={input}
+                        onChange={(e) => setInput(e.target.value)}
+                        placeholder="Type your message..."
+                        disabled={isLoading || !activeModel}
+                    />
+                    <button 
+                        type="submit" 
+                        disabled={isLoading || !input.trim() || !activeModel}
+                    >
+                        Send
+                    </button>
+                </form>
+            </div>
         </div>
     );
 }

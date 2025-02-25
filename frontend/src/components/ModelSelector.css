@@ -1,0 +1,74 @@
+.model-selector {
+  margin-bottom: 15px;
+}
+
+.model-selector label {
+  display: block;
+  margin-bottom: 5px;
+  font-weight: 500;
+  color: #555;
+}
+
+.model-select {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  font-size: 14px;
+  background-color: white;
+}
+
+.model-select option {
+  padding: 8px;
+}
+
+.model-select optgroup {
+  font-weight: bold;
+  color: #555;
+}
+
+.model-selector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 5px;
+}
+
+.refresh-button {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 16px;
+  color: #555;
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: background-color 0.2s, transform 0.2s;
+}
+
+.refresh-button:hover {
+  background-color: #f0f0f0;
+  color: #000;
+}
+
+.refresh-button:active {
+  transform: scale(0.95);
+}
+
+.refresh-button.refreshing {
+  animation: spin 1s linear infinite;
+  color: #007bff;
+}
+
+.refresh-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+} 

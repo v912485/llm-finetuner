@@ -97,38 +97,50 @@ def save_model():
         # Create saved models directory
         SAVED_MODELS_DIR.mkdir(exist_ok=True)
         
+        # Use a temporary directory for the copy operation
+        temp_path = SAVED_MODELS_DIR / f"{safe_save_name}_temp"
+        
+        if temp_path.exists():
+            shutil.rmtree(temp_path)
+            
         if target_path.exists():
             return jsonify({
                 "status": "error",
-                "message": "A model with this name already exists"
+                "message": f"A model with the name '{safe_save_name}' already exists"
             }), 409
             
-        # Copy model files
-        shutil.copytree(source_path, target_path)
-        
-        # Save metadata
-        metadata = {
-            'original_model': model_id,
-            'save_date': datetime.now().isoformat(),
-            'training_params': trainer.get_status()
-        }
-        
-        with open(target_path / 'metadata.json', 'w') as f:
-            json.dump(metadata, f, indent=2)
+        # Copy to temp directory first
+        try:
+            shutil.copytree(source_path, temp_path)
             
-        logger.info(f"Model saved successfully as {safe_save_name}")
-        
-        return jsonify({
-            "status": "success",
-            "message": "Model saved successfully",
-            "save_path": str(target_path)
-        })
-        
+            # If successful, rename to final name
+            temp_path.rename(target_path)
+            
+            # Create metadata file
+            metadata = {
+                "original_model": model_id,
+                "saved_date": datetime.now().isoformat(),
+                "description": data.get('description', '')
+            }
+            
+            with open(target_path / 'metadata.json', 'w') as f:
+                json.dump(metadata, f, indent=2)
+                
+            return jsonify({
+                "status": "success",
+                "message": f"Model saved as '{safe_save_name}'"
+            })
+        except Exception as e:
+            # Clean up temp directory on failure
+            if temp_path.exists():
+                shutil.rmtree(temp_path)
+            raise e
+            
     except Exception as e:
         logger.error(f"Error saving model: {str(e)}")
         return jsonify({
             "status": "error",
-            "message": str(e)
+            "message": f"Error saving model: {str(e)}"
         }), 500
 
 @bp.route('/cancel', methods=['POST'])

@@ -62,12 +62,13 @@ class ModelManager:
 
             logger.info(f"Starting download of model: {model_id}")
             
-            # Create models directory if it doesn't exist
-            MODELS_DIR.mkdir(exist_ok=True)
-            
             # Convert model ID to safe directory name
             safe_dir_name = model_id.replace('/', '_')
             model_path = MODELS_DIR / safe_dir_name
+            temp_path = MODELS_DIR / f"{safe_dir_name}_temp"
+            
+            # Create a temporary directory for download
+            temp_path.mkdir(parents=True, exist_ok=True)
             
             # Download model and tokenizer
             try:
@@ -83,9 +84,15 @@ class ModelManager:
                     torch_dtype=torch.float32  # Start with float32 for compatibility
                 )
                 
-                # Save model and tokenizer
-                model.save_pretrained(model_path)
-                tokenizer.save_pretrained(model_path)
+                # Save model and tokenizer with same parameters used for loading
+                model.save_pretrained(temp_path, safe_serialization=True)
+                tokenizer.save_pretrained(temp_path)
+                
+                # If successful, remove existing directory and rename temp
+                if model_path.exists():
+                    import shutil
+                    shutil.rmtree(model_path)
+                temp_path.rename(model_path)
                 
                 logger.info(f"Successfully downloaded model to {model_path}")
                 
@@ -95,10 +102,14 @@ class ModelManager:
                 })
                 
             except Exception as e:
+                # Clean up temp directory on failure
+                import shutil
+                if temp_path.exists():
+                    shutil.rmtree(temp_path)
                 logger.error(f"Error downloading model: {str(e)}")
                 return jsonify({
                     "status": "error",
-                    "message": f"Failed to download model: {str(e)}"
+                    "message": f"Error downloading model: {str(e)}"
                 }), 500
                 
         except Exception as e:

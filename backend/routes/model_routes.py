@@ -176,15 +176,25 @@ def get_saved_models():
                 if model_dir.is_dir():
                     metadata_path = model_dir / 'metadata.json'
                     if metadata_path.exists():
-                        with open(metadata_path, 'r') as f:
-                            metadata = json.load(f)
-                            saved_models.append({
-                                'name': model_dir.name,
-                                'original_model': metadata['original_model'],
-                                'save_date': metadata['save_date'],
-                                'path': str(model_dir)
-                            })
+                        try:
+                            with open(metadata_path, 'r') as f:
+                                metadata = json.load(f)
+                                # Handle both old and new metadata formats
+                                saved_date = metadata.get('saved_date', '')
+                                if not saved_date:
+                                    saved_date = metadata.get('save_date', '')
+                                
+                                saved_models.append({
+                                    'name': model_dir.name,
+                                    'original_model': metadata.get('original_model', ''),
+                                    'saved_date': saved_date,
+                                    'description': metadata.get('description', ''),
+                                    'path': str(model_dir)
+                                })
+                        except Exception as e:
+                            logger.error(f"Error reading metadata for {model_dir}: {str(e)}")
         
+        logger.info(f"Found {len(saved_models)} saved models")
         return jsonify({
             "status": "success",
             "saved_models": saved_models

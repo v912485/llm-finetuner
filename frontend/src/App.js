@@ -4,69 +4,8 @@ import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
 import Chat from './Chat';
 import Settings from './Settings';
 import TrainingGraph from './components/TrainingGraph';
+import ConfigForm from './components/ConfigForm';
 import apiConfig from './config';
-
-const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) => {
-  const [tempConfig, setTempConfig] = useState(currentConfig || {});
-
-  useEffect(() => {
-    console.log('ConfigForm received new config:', currentConfig);
-    setTempConfig(currentConfig || {});
-  }, [currentConfig]);
-
-  const handleSaveConfig = () => {
-    console.log('Saving config:', tempConfig);
-    if (!tempConfig.inputField || !tempConfig.outputField) {
-      alert('Please select both input and output fields');
-      return;
-    }
-    onSave(file.path, tempConfig);
-  };
-
-  return (
-    <div className="config-form">
-      <div className="config-field">
-        <label>Input Field:</label>
-        <select
-          value={tempConfig.inputField || ''}
-          onChange={(e) => setTempConfig(prev => ({
-            ...prev,
-            inputField: e.target.value
-          }))}
-        >
-          <option value="">Select input field</option>
-          {structure.fields.map(field => (
-            <option key={field} value={field}>{field}</option>
-          ))}
-        </select>
-      </div>
-      <div className="config-field">
-        <label>Output Field:</label>
-        <select
-          value={tempConfig.outputField || ''}
-          onChange={(e) => setTempConfig(prev => ({
-            ...prev,
-            outputField: e.target.value
-          }))}
-        >
-          <option value="">Select output field</option>
-          {structure.fields.map(field => (
-            <option key={field} value={field}>{field}</option>
-          ))}
-        </select>
-      </div>
-      <div className="config-actions">
-        <button 
-          className="save-config-btn"
-          onClick={handleSaveConfig}
-          disabled={!tempConfig.inputField || !tempConfig.outputField}
-        >
-          {isConfigured ? 'Update Configuration' : 'Save Configuration'}
-        </button>
-      </div>
-    </div>
-  );
-};
 
 function App() {
   const [availableModels, setAvailableModels] = useState([]);
@@ -335,33 +274,6 @@ function App() {
     }
   };
 
-  const handleConfigUpdate = async (filePath, config) => {
-    try {
-      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.config}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          file_path: filePath,
-          config: config
-        }),
-      });
-
-      const data = await response.json();
-      if (data.status === 'success') {
-        setFileConfig(prev => ({
-          ...prev,
-          [filePath]: config
-        }));
-      } else {
-        console.error('Error saving configuration:', data.message);
-      }
-    } catch (error) {
-      console.error('Error saving configuration:', error);
-    }
-  };
-
   const handleConfigSave = async (filePath, config) => {
     try {
       const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.config}`, {
@@ -392,17 +304,6 @@ function App() {
       console.error('Error saving configuration:', error);
       alert(`Error saving configuration: ${error.message}`);
     }
-  };
-
-  // Add this function to handle field selection
-  const handleFieldSelection = (filePath, field, value) => {
-    setFileConfig(prev => ({
-      ...prev,
-      [filePath]: {
-        ...prev[filePath],
-        [field]: value
-      }
-    }));
   };
 
   const renderConfigForm = (file) => {
@@ -541,7 +442,8 @@ function App() {
         },
         body: JSON.stringify({
           model_id: selectedModel,
-          save_name: saveName
+          save_name: saveName,
+          description: 'Fine-tuned model'
         }),
       });
 
@@ -550,6 +452,17 @@ function App() {
         alert('Model saved successfully!');
         setShowSaveDialog(false);
         setSaveName('');
+        
+        // Fetch saved models to update the dropdown
+        try {
+          const savedResponse = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`);
+          const savedData = await savedResponse.json();
+          if (savedData.status === 'success') {
+            console.log('Updated saved models:', savedData.saved_models);
+          }
+        } catch (error) {
+          console.error('Error fetching saved models after save:', error);
+        }
       } else {
         alert(`Error saving model: ${data.message}`);
       }
