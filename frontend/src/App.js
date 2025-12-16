@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import './App.css';
 import { BrowserRouter as Router, Route, Routes, Link } from 'react-router-dom';
 import Chat from './Chat';
@@ -38,29 +38,114 @@ function App() {
   const [newModelId, setNewModelId] = useState('');
   const [newModelName, setNewModelName] = useState('');
 
+  const getAuthHeaders = useCallback((extraHeaders = {}) => {
+    const token = localStorage.getItem('adminToken');
+    return {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...extraHeaders
+    };
+  }, []);
+
+  const fetchFileStructure = useCallback(async (datasetId) => {
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.structure}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({ dataset_id: datasetId }),
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        setFileStructures(prev => ({
+          ...prev,
+          [datasetId]: data.structure
+        }));
+        console.log('Loaded structure for:', datasetId, data.structure);
+      } else {
+        console.error('Error loading structure:', data.message);
+      }
+    } catch (error) {
+      console.error('Error fetching file structure:', error);
+    }
+  }, [getAuthHeaders]);
+
+  const fetchConfiguredDatasets = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.configured}`, {
+        headers: getAuthHeaders()
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        const configs = {};
+        data.configured_datasets.forEach(dataset => {
+          configs[dataset.dataset_id] = {
+            inputField: dataset.config.input_field,
+            outputField: dataset.config.output_field
+          };
+        });
+        setDatasetConfigs(configs);
+        console.log('Loaded dataset configs:', configs);
+      }
+    } catch (error) {
+      console.error('Error fetching dataset configurations:', error);
+    }
+  }, [getAuthHeaders]);
+
+  const fetchTrainingStatus = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.status}`, {
+        headers: getAuthHeaders()
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        setTrainingStatus(data);
+        if (!data.is_training) {
+          setIsTraining(false);
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching training status:', error);
+    }
+  }, [getAuthHeaders]);
+
   useEffect(() => {
-    fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.config}`)
+    fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.config}`, {
+      headers: getAuthHeaders()
+    })
       .then(res => res.json())
       .then(data => setConfig(data));
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
     const fetchInitialData = async () => {
       try {
         const [availableResponse, downloadedResponse] = await Promise.all([
-          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.available}`),
-          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`)
+          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.available}`, { headers: getAuthHeaders() }),
+          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`, { headers: getAuthHeaders() })
         ]);
 
         const availableData = await availableResponse.json();
         const downloadedData = await downloadedResponse.json();
 
+        if (!availableResponse.ok) {
+          console.error('Error fetching available models:', availableData);
+          setAvailableModels([]);
+        } else if (Array.isArray(availableData)) {
+          setAvailableModels(availableData);
+        } else if (availableData && Array.isArray(availableData.models)) {
+          setAvailableModels(availableData.models);
+        } else {
+          console.error('Unexpected available models response shape:', availableData);
+          setAvailableModels([]);
+        }
+
         if (downloadedData.status === 'success') {
           setDownloadedModels(downloadedData.downloaded_models);
           console.log('Downloaded models:', downloadedData.downloaded_models);
         }
-
-        setAvailableModels(availableData);
         
         // Clear selected model if it's not in the downloaded models
         setSelectedModel(prev => {
@@ -86,18 +171,20 @@ function App() {
     return () => {
       if (intervalId) clearInterval(intervalId);
     };
-  }, [isTraining]);
+  }, [isTraining, fetchTrainingStatus]);
 
   useEffect(() => {
     const fetchDownloadedDatasets = async () => {
       try {
-        const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.downloaded}`);
+        const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.downloaded}`, {
+          headers: getAuthHeaders()
+        });
         const data = await response.json();
         if (data.status === 'success') {
           setDownloadedDatasets(data.datasets);
           // Fetch structure for each dataset
           data.datasets.forEach(dataset => {
-            fetchFileStructure(dataset.path);
+            fetchFileStructure(dataset.dataset_id);
           });
         }
       } catch (error) {
@@ -106,7 +193,7 @@ function App() {
     };
 
     fetchDownloadedDatasets();
-  }, []);
+  }, [fetchFileStructure, getAuthHeaders]);
 
   useEffect(() => {
     // Load saved configurations from localStorage
@@ -133,22 +220,24 @@ function App() {
   useEffect(() => {
     const fetchConfigurations = async () => {
       try {
-        const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.configured}`);
+        const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.configured}`, {
+          headers: getAuthHeaders()
+        });
         const data = await response.json();
         if (data.status === 'success') {
           const configs = {};
-          const configuredPaths = [];
+          const configuredIds = [];
           
           data.configured_datasets.forEach(dataset => {
-            configs[dataset.path] = {
+            configs[dataset.dataset_id] = {
               inputField: dataset.config.input_field,
               outputField: dataset.config.output_field
             };
-            configuredPaths.push(dataset.path);
+            configuredIds.push(dataset.dataset_id);
           });
           
           setFileConfig(configs);
-          setConfiguredFiles(configuredPaths);
+          setConfiguredFiles(configuredIds);
           console.log('Loaded configurations:', configs);
         }
       } catch (error) {
@@ -157,31 +246,11 @@ function App() {
     };
 
     fetchConfigurations();
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
     fetchConfiguredDatasets();
-  }, []);
-
-  const fetchConfiguredDatasets = async () => {
-    try {
-      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.configured}`);
-      const data = await response.json();
-      if (data.status === 'success') {
-        const configs = {};
-        data.configured_datasets.forEach(dataset => {
-          configs[dataset.path] = {
-            inputField: dataset.config.input_field,
-            outputField: dataset.config.output_field
-          };
-        });
-        setDatasetConfigs(configs);
-        console.log('Loaded dataset configs:', configs);
-      }
-    } catch (error) {
-      console.error('Error fetching dataset configurations:', error);
-    }
-  };
+  }, [fetchConfiguredDatasets]);
 
   const handleModelDownload = async (modelId) => {
     setLoading(prev => ({ ...prev, [modelId]: true }));
@@ -192,6 +261,7 @@ function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         },
         body: JSON.stringify({ model_id: modelId }),
       });
@@ -228,27 +298,64 @@ function App() {
     formData.append('file', file);
 
     try {
-      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.prepare}`, {
-        method: 'POST',
-        body: formData,
-        onUploadProgress: (progressEvent) => {
-          const progress = (progressEvent.loaded / progressEvent.total) * 100;
-          setUploadProgress(Math.round(progress));
-        },
+      const data = await new Promise((resolve, reject) => {
+        const xhr = new XMLHttpRequest();
+        xhr.open('POST', `${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.prepare}`);
+
+        const authHeaders = getAuthHeaders();
+        Object.entries(authHeaders).forEach(([key, value]) => {
+          xhr.setRequestHeader(key, value);
+        });
+
+        xhr.upload.onprogress = (progressEvent) => {
+          if (!progressEvent.lengthComputable) return;
+          const percentComplete = Math.round((progressEvent.loaded / progressEvent.total) * 100);
+          setUploadProgress(percentComplete);
+        };
+
+        xhr.onload = () => {
+          try {
+            const isSuccess = xhr.status >= 200 && xhr.status < 300;
+            const parsed = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+            if (!isSuccess) {
+              reject(new Error((parsed && parsed.message) || 'Failed to upload dataset'));
+              return;
+            }
+            setUploadProgress(100);
+            resolve(parsed);
+          } catch (e) {
+            reject(new Error('Failed to parse server response'));
+          }
+        };
+
+        xhr.onerror = () => reject(new Error('Network error while uploading dataset'));
+        xhr.send(formData);
       });
-      const data = await response.json();
       if (data.status === 'success') {
         setUploadedFiles(prev => [...prev, {
-          name: file.name,
-          path: data.dataset_path,
+          dataset_id: data.dataset_id,
+          name: data.file_info.name,
           size: file.size,
           uploadedAt: new Date().toLocaleString()
         }]);
         setFileStructures(prev => ({
           ...prev,
-          [data.dataset_path]: data.file_info.structure
+          [data.dataset_id]: data.file_info.structure
         }));
-        console.log('Dataset prepared:', data.dataset_path);
+        console.log('Dataset prepared:', data.dataset_id);
+
+        // Refresh downloaded datasets so the main list is up to date
+        try {
+          const refreshed = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.downloaded}`, {
+            headers: getAuthHeaders()
+          });
+          const refreshedData = await refreshed.json();
+          if (refreshedData.status === 'success') {
+            setDownloadedDatasets(refreshedData.datasets);
+          }
+        } catch (e) {
+          // ignore refresh errors
+        }
       } else {
         console.error('Error preparing dataset:', data.message);
       }
@@ -263,26 +370,27 @@ function App() {
   const handleFileSelect = (file) => {
     console.log('Selected file:', file);
     
-    if (selectedFiles.includes(file.path)) {
-      setSelectedFiles(prev => prev.filter(f => f !== file.path));
+    if (selectedFiles.includes(file.dataset_id)) {
+      setSelectedFiles(prev => prev.filter(f => f !== file.dataset_id));
     } else {
-      setSelectedFiles(prev => [...prev, file.path]);
+      setSelectedFiles(prev => [...prev, file.dataset_id]);
       // Fetch structure if not already loaded
-      if (!fileStructures[file.path]) {
-        fetchFileStructure(file.path);
+      if (!fileStructures[file.dataset_id]) {
+        fetchFileStructure(file.dataset_id);
       }
     }
   };
 
-  const handleConfigSave = async (filePath, config) => {
+  const handleConfigSave = async (datasetId, config) => {
     try {
       const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.config}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         },
         body: JSON.stringify({
-          file_path: filePath,
+          dataset_id: datasetId,
           config: {
             inputField: config.inputField,
             outputField: config.outputField
@@ -294,8 +402,9 @@ function App() {
       if (data.status === 'success') {
         setDatasetConfigs(prev => ({
           ...prev,
-          [filePath]: config
+          [datasetId]: config
         }));
+        setConfiguredFiles(prev => (prev.includes(datasetId) ? prev : [...prev, datasetId]));
         console.log('Configuration saved successfully');
       } else {
         throw new Error(data.message || 'Failed to save configuration');
@@ -307,12 +416,12 @@ function App() {
   };
 
   const renderConfigForm = (file) => {
-    const structure = fileStructures[file.path];
-    const currentConfig = fileConfig[file.path];
-    const isConfigured = configuredFiles.includes(file.path);
+    const structure = fileStructures[file.dataset_id];
+    const currentConfig = fileConfig[file.dataset_id];
+    const isConfigured = configuredFiles.includes(file.dataset_id);
     
     console.log('Rendering config form:', {
-      path: file.path,
+      dataset_id: file.dataset_id,
       structure,
       currentConfig,
       isConfigured
@@ -335,7 +444,9 @@ function App() {
 
   const fetchDownloadedModels = async () => {
     try {
-      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`);
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`, {
+        headers: getAuthHeaders()
+      });
       const data = await response.json();
       if (data.status === 'success') {
         setDownloadedModels(data.downloaded_models);
@@ -345,20 +456,7 @@ function App() {
     }
   };
 
-  const fetchTrainingStatus = async () => {
-    try {
-      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.status}`);
-      const data = await response.json();
-      if (data.status === 'success') {
-        setTrainingStatus(data);
-        if (!data.is_training) {
-          setIsTraining(false);
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching training status:', error);
-    }
-  };
+  // fetchTrainingStatus is defined above via useCallback
 
   const startTraining = async () => {
     if (!selectedModel || selectedFiles.length === 0) {
@@ -371,6 +469,7 @@ function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         },
         body: JSON.stringify({
           model_id: selectedModel,
@@ -439,6 +538,7 @@ function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         },
         body: JSON.stringify({
           model_id: selectedModel,
@@ -455,7 +555,9 @@ function App() {
         
         // Fetch saved models to update the dropdown
         try {
-          const savedResponse = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`);
+          const savedResponse = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`, {
+            headers: getAuthHeaders()
+          });
           const savedData = await savedResponse.json();
           if (savedData.status === 'success') {
             console.log('Updated saved models:', savedData.saved_models);
@@ -472,38 +574,16 @@ function App() {
     }
   };
 
-  const fetchFileStructure = async (filePath) => {
-    try {
-      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.structure}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ file_path: filePath }),
-      });
-
-      const data = await response.json();
-      if (data.status === 'success') {
-        setFileStructures(prev => ({
-          ...prev,
-          [filePath]: data.structure
-        }));
-        console.log('Loaded structure for:', filePath, data.structure);
-      } else {
-        console.error('Error loading structure:', data.message);
-      }
-    } catch (error) {
-      console.error('Error fetching file structure:', error);
-    }
-  };
+  // fetchFileStructure is defined above via useCallback
 
   // Add cancel training function
   const cancelTraining = async () => {
     try {
-      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.cancelTraining}`, {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.cancel}`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         }
       });
 
@@ -524,6 +604,7 @@ function App() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          ...getAuthHeaders()
         },
         body: JSON.stringify({ 
           model_id: newModelId,
@@ -553,7 +634,7 @@ function App() {
       const encodedModelId = encodeURIComponent(modelId);
       const response = await fetch(
         `${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.delete}/${encodedModelId}`,
-        { method: 'DELETE' }
+        { method: 'DELETE', headers: getAuthHeaders() }
       );
       
       const data = await response.json();
@@ -681,10 +762,10 @@ function App() {
                   <h3>Available Datasets</h3>
                   <div className="datasets-list">
                     {downloadedDatasets.map((dataset, index) => {
-                      const isSelected = selectedFiles.includes(dataset.path);
-                      const isConfigured = configuredFiles.includes(dataset.path);
+                      const isSelected = selectedFiles.includes(dataset.dataset_id);
+                      const isConfigured = configuredFiles.includes(dataset.dataset_id);
                       return (
-                        <div key={index}>
+                        <div key={dataset.dataset_id || index}>
                           <div className={`dataset-item ${isSelected ? 'selected' : ''} ${isConfigured ? 'configured' : ''}`}>
                             <div className="dataset-info">
                               <span className="dataset-name">{dataset.name}</span>
@@ -712,14 +793,7 @@ function App() {
                               <button
                                 className={`config-toggle ${isConfigured ? 'configured' : ''}`}
                                 onClick={() => {
-                                  if (configuredFiles.includes(dataset.path)) {
-                                    setConfiguredFiles(prev => prev.filter(f => f !== dataset.path));
-                                  } else {
-                                    handleConfigSave(dataset.path, {
-                                      inputField: '',
-                                      outputField: ''
-                                    });
-                                  }
+                                  if (!isSelected) handleFileSelect(dataset);
                                 }}
                               >
                                 {isConfigured ? 'Edit Config' : 'Configure'}
@@ -732,7 +806,7 @@ function App() {
                               <p className="config-help">
                                 Specify which fields in your data file contain the input text and expected output.
                               </p>
-                              {renderConfigForm({ path: dataset.path, name: dataset.name })}
+                              {renderConfigForm({ dataset_id: dataset.dataset_id, name: dataset.name })}
                             </div>
                           )}
                         </div>
@@ -775,8 +849,8 @@ function App() {
                     <h3>Uploaded Datasets</h3>
                     <div className="files-list">
                       {uploadedFiles.map((file, index) => {
-                        const isSelected = selectedFiles.includes(file.path);
-                        const isConfigured = configuredFiles.includes(file.path);
+                        const isSelected = selectedFiles.includes(file.dataset_id);
+                        const isConfigured = configuredFiles.includes(file.dataset_id);
                         return (
                           <div key={index}>
                             <div className={`file-item ${isSelected ? 'selected' : ''} ${isConfigured ? 'configured' : ''}`}>
@@ -801,14 +875,10 @@ function App() {
                                 <button
                                   className={`config-toggle ${isConfigured ? 'configured' : ''}`}
                                   onClick={() => {
-                                    if (configuredFiles.includes(file.path)) {
-                                      setConfiguredFiles(prev => prev.filter(f => f !== file.path));
-                                    } else {
-                                      handleConfigSave(file);
-                                    }
+                                    if (!isSelected) handleFileSelect(file);
                                   }}
                                 >
-                                  {isConfigured ? 'Edit Config' : 'Save Config'}
+                                  {isConfigured ? 'Edit Config' : 'Configure'}
                                 </button>
                               </div>
                             </div>
@@ -992,7 +1062,11 @@ function App() {
                   <div className="save-model-section">
                     <button 
                       className="save-model-button"
-                      onClick={() => setShowSaveDialog(true)}
+                      onClick={() => {
+                        const baseModelName = selectedModel?.split('/').pop() || '';
+                        setSaveName(baseModelName ? `${baseModelName}-finetuned` : '');
+                        setShowSaveDialog(true);
+                      }}
                     >
                       Save Trained Model
                     </button>

@@ -1,24 +1,34 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, get_linear_schedule_with_warmup
 from torch.utils.data import DataLoader
-from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
 from transformers import BitsAndBytesConfig
 from training.dataset import CustomDataset
 from utils.device_info import DEVICE_INFO, ACCELERATOR_AVAILABLE
-from config.settings import MODELS_DIR, GRADIENT_ACCUMULATION_STEPS, MAX_LENGTH, BATCH_SIZE, CONFIG_DIR
+from config.settings import MODELS_DIR, GRADIENT_ACCUMULATION_STEPS, MAX_LENGTH, BATCH_SIZE, CONFIG_DIR, DATASETS_DIR
 import logging
 from datetime import datetime
 import os
 import json
 from pathlib import Path
 import random
+from utils.datasets import resolve_dataset_path, load_json_dataset
+import threading
 
 logger = logging.getLogger('training')
+
+try:
+    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training, TaskType
+except Exception:
+    LoraConfig = None
+    get_peft_model = None
+    prepare_model_for_kbit_training = None
+    TaskType = None
 
 class Trainer:
     def __init__(self):
         self.training_status = {
             'is_training': False,
+            'is_cancelling': False,
             'progress': 0,
             'current_epoch': 0,
             'total_epochs': 0,
@@ -36,7 +46,8 @@ class Trainer:
         }
         self.device = torch.device('cuda' if ACCELERATOR_AVAILABLE else 'cpu')
         self.is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
-        self.should_stop = False  # Add flag for cancellation
+        self._cancel_event = threading.Event()
+        self._training_thread = None
         
         # Log device information at initialization
         logger.info(f"Trainer initialized with device: {self.device}")
@@ -57,6 +68,9 @@ class Trainer:
         return self.training_status
 
     def get_model_config(self, model_id, use_qlora=False):
+        if LoraConfig is None or TaskType is None:
+            raise RuntimeError("peft is not installed; LoRA/QLoRA training is unavailable on this server.")
+
         target_modules = {
             'gpt2': ["c_attn"],
             'facebook/opt': ["q_proj", "v_proj"],
@@ -106,6 +120,7 @@ class Trainer:
             
             self.training_status.update({
                 'is_training': True,
+                'is_cancelling': False,
                 'progress': 0,
                 'start_time': datetime.now().isoformat(),
                 'model_id': config['model_id'],
@@ -116,13 +131,15 @@ class Trainer:
             })
 
             # Start training in a separate thread
-            import threading
-            thread = threading.Thread(target=self._run_training, args=(config,))
+            self._cancel_event.clear()
+            thread = threading.Thread(target=self._run_training, args=(config,), daemon=True)
+            self._training_thread = thread
             thread.start()
 
         except Exception as e:
             self.training_status.update({
                 'is_training': False,
+                'is_cancelling': False,
                 'error': str(e),
                 'end_time': datetime.now().isoformat()
             })
@@ -131,44 +148,18 @@ class Trainer:
     def cancel_training(self):
         """Cancel ongoing training"""
         logger.info("Cancelling training...")
-        self.should_stop = True
+        self._cancel_event.set()
         self.training_status.update({
-            'is_training': False,
-            'end_time': datetime.now().isoformat(),
-            'error': 'Training cancelled by user'
+            'is_cancelling': True,
+            'error': 'Cancellation requested'
         })
 
     def _load_and_validate_dataset(self, dataset_path, config):
         """Helper function to load and validate dataset with error handling"""
         try:
-            # First try to load the entire file
-            try:
-                with open(dataset_path, 'r', encoding='utf-8') as f:
-                    dataset = json.load(f)
-                    logger.info(f"Successfully loaded dataset: {dataset_path}")
-                    return dataset
-            except json.JSONDecodeError as e:
-                logger.warning(f"Initial JSON load failed, trying line-by-line: {str(e)}")
-                
-                # If that fails, try to read line by line
-                valid_entries = []
-                with open(dataset_path, 'r', encoding='utf-8') as f:
-                    for line_num, line in enumerate(f, 1):
-                        line = line.strip()
-                        if not line:  # Skip empty lines
-                            continue
-                        try:
-                            entry = json.loads(line)
-                            valid_entries.append(entry)
-                        except json.JSONDecodeError as line_error:
-                            logger.error(f"Error parsing line {line_num}: {str(line_error)}")
-                            continue
-                
-                if not valid_entries:
-                    raise ValueError("No valid JSON entries found in file")
-                    
-                logger.info(f"Loaded {len(valid_entries)} valid entries from {dataset_path}")
-                return valid_entries
+            dataset = load_json_dataset(Path(dataset_path))
+            logger.info(f"Successfully loaded dataset: {dataset_path} ({len(dataset)} records)")
+            return dataset
                 
         except Exception as e:
             logger.error(f"Error loading dataset {dataset_path}: {str(e)}")
@@ -176,9 +167,9 @@ class Trainer:
 
     def _run_training(self, config):
         try:
-            self.should_stop = False  # Reset stop flag
+            torch.set_grad_enabled(True)
             model_id = config['model_id']
-            datasets = config['datasets']
+            dataset_ids = config['datasets']
             params = config.get('params', {})
             
             # Force single GPU if specified
@@ -218,25 +209,40 @@ class Trainer:
             )
             
             # Load model based on training method
+            common_model_kwargs = {
+                "device_map": None,  # Disable auto device mapping
+                "trust_remote_code": True,
+            }
+            if "gemma" in (model_id or "").lower():
+                common_model_kwargs["attn_implementation"] = "eager"
+
             if training_method in ['lora', 'qlora']:
+                if get_peft_model is None:
+                    raise RuntimeError("peft is not installed; LoRA/QLoRA training is unavailable on this server.")
                 model_config = self.get_model_config(model_id, use_qlora=(training_method == 'qlora'))
                 
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    device_map=None,  # Disable auto device mapping
-                    trust_remote_code=True,
-                    **model_config.get('bnb_config', {})
-                )
+                if training_method == 'qlora':
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        quantization_config=model_config.get('bnb_config'),
+                        **common_model_kwargs
+                    )
+                else:
+                    model = AutoModelForCausalLM.from_pretrained(
+                        model_path,
+                        **common_model_kwargs
+                    )
                 
                 if training_method == 'qlora':
+                    if prepare_model_for_kbit_training is None:
+                        raise RuntimeError("peft is not installed; QLoRA training is unavailable on this server.")
                     model = prepare_model_for_kbit_training(model)
                 
                 model = get_peft_model(model, model_config['lora_config'])
             else:
                 model = AutoModelForCausalLM.from_pretrained(
                     model_path,
-                    device_map=None,  # Disable auto device mapping
-                    trust_remote_code=True
+                    **common_model_kwargs
                 )
             
             # Explicitly move model to device
@@ -245,6 +251,19 @@ class Trainer:
             # Enable gradient checkpointing if available
             if hasattr(model, 'gradient_checkpointing_enable'):
                 model.gradient_checkpointing_enable()
+                if hasattr(model, "enable_input_require_grads"):
+                    model.enable_input_require_grads()
+                if getattr(model, "config", None) is not None:
+                    model.config.use_cache = False
+                    if hasattr(model.config, "gradient_checkpointing"):
+                        model.config.gradient_checkpointing = True
+
+            if training_method == 'standard':
+                for p in model.parameters():
+                    p.requires_grad_(True)
+
+            if not any(p.requires_grad for p in model.parameters()):
+                raise RuntimeError("No trainable parameters found; model appears to be fully frozen.")
             
             # Disable model parallelism
             if hasattr(model, 'is_parallelizable'):
@@ -253,9 +272,9 @@ class Trainer:
             
             # Load dataset configurations
             all_data = []
-            for dataset_path in datasets:
-                dataset_name = Path(dataset_path).stem
-                config_path = CONFIG_DIR / f"{dataset_name}.config.json"
+            dataset_configs_list = []
+            for dataset_id in dataset_ids:
+                config_path = CONFIG_DIR / f"{dataset_id}.config.json"
                 
                 logger.info(f"Loading config from: {config_path}")
                 
@@ -263,26 +282,26 @@ class Trainer:
                     with open(config_path, 'r') as cf:
                         dataset_config = json.load(cf)
                         
+                    dataset_path = resolve_dataset_path(DATASETS_DIR, dataset_id)
                     # Load and validate dataset
                     dataset = self._load_and_validate_dataset(dataset_path, dataset_config)
                     
                     input_field = dataset_config['input_field']
                     output_field = dataset_config['output_field']
+                    dataset_configs_list.append((input_field, output_field))
                     
-                    # Process dataset entries
+                    # Process dataset entries - just pass them through
+                    # CustomDataset will handle field extraction
                     for entry in dataset:
-                        if isinstance(entry, dict) and input_field in entry and output_field in entry:
-                            all_data.append({
-                                'input': str(entry[input_field]),
-                                'output': str(entry[output_field])
-                            })
+                        if isinstance(entry, dict):
+                            all_data.append(entry)
                         else:
                             logger.warning(f"Skipping invalid entry: {entry}")
                             
-                    logger.info(f"Processed {len(all_data)} valid entries from {dataset_path}")
+                    logger.info(f"Processed {len(all_data)} valid entries from dataset_id={dataset_id}")
                             
                 except Exception as e:
-                    logger.error(f"Error processing dataset {dataset_path}: {str(e)}")
+                    logger.error(f"Error processing dataset dataset_id={dataset_id}: {str(e)}")
                     raise
                 
             if not all_data:
@@ -298,9 +317,13 @@ class Trainer:
             
             logger.info(f"Dataset split: {len(train_data)} training samples, {len(val_data)} validation samples")
             
+            # Use first dataset's config for field names (all datasets should use same schema)
+            input_field, output_field = dataset_configs_list[0] if dataset_configs_list else ('input', 'output')
+            logger.info(f"Using field mapping: input_field={input_field}, output_field={output_field}")
+            
             # Create datasets with loaded tokenizer
-            train_dataset = CustomDataset(train_data, tokenizer)
-            val_dataset = CustomDataset(val_data, tokenizer)
+            train_dataset = CustomDataset(train_data, tokenizer, input_field, output_field)
+            val_dataset = CustomDataset(val_data, tokenizer, input_field, output_field)
             
             train_dataloader = DataLoader(
                 train_dataset,
@@ -346,13 +369,20 @@ class Trainer:
             logger.info(f"Using device: {self.device}")
             
             for epoch in range(num_epochs):
-                if self.should_stop:
+                if self._cancel_event.is_set():
                     logger.info("Training cancelled")
+                    self.training_status.update({
+                        'is_training': False,
+                        'is_cancelling': False,
+                        'end_time': datetime.now().isoformat(),
+                        'error': 'Training cancelled by user'
+                    })
                     return
 
                 # Training phase
                 model.train()
                 train_loss = 0
+                optimizer.zero_grad()  # Clear gradients at start of epoch
                 
                 # Update current epoch at the start of each epoch (1-based indexing)
                 self.training_status.update({
@@ -360,14 +390,21 @@ class Trainer:
                     'total_epochs': num_epochs
                 })
                 
+                num_train_batches = len(train_dataloader)
                 for step, batch in enumerate(train_dataloader):
-                    if self.should_stop:
+                    if self._cancel_event.is_set():
                         logger.info("Training cancelled")
+                        self.training_status.update({
+                            'is_training': False,
+                            'is_cancelling': False,
+                            'end_time': datetime.now().isoformat(),
+                            'error': 'Training cancelled by user'
+                        })
                         return
 
                     # Move batch to device and ensure it stays there
                     batch = {k: v.to(self.device) for k, v in batch.items()}
-                    labels = batch['input_ids'].clone()
+                    labels = batch['labels'] if 'labels' in batch else batch['input_ids'].clone()
                     
                     # Clear CUDA cache periodically
                     if step % 10 == 0 and torch.cuda.is_available():
@@ -380,10 +417,19 @@ class Trainer:
                     )
                     
                     loss = outputs.loss
+                    if not loss.requires_grad:
+                        raise RuntimeError("Loss does not require grad; training cannot proceed (model likely frozen or grad disabled).")
                     train_loss += loss.item()
                     loss.backward()
                     
                     if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        optimizer.step()
+                        scheduler.step()
+                        optimizer.zero_grad()
+                    
+                    # Flush remaining gradients at end of epoch
+                    if step == num_train_batches - 1 and (step + 1) % GRADIENT_ACCUMULATION_STEPS != 0:
                         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                         optimizer.step()
                         scheduler.step()
@@ -406,13 +452,19 @@ class Trainer:
                 val_loss = 0
                 with torch.no_grad():
                     for batch in val_dataloader:
-                        if self.should_stop:
+                        if self._cancel_event.is_set():
                             logger.info("Training cancelled")
+                            self.training_status.update({
+                                'is_training': False,
+                                'is_cancelling': False,
+                                'end_time': datetime.now().isoformat(),
+                                'error': 'Training cancelled by user'
+                            })
                             return
 
                         # Move batch to device and ensure it stays there
                         batch = {k: v.to(self.device) for k, v in batch.items()}
-                        labels = batch['input_ids'].clone()
+                        labels = batch['labels'] if 'labels' in batch else batch['input_ids'].clone()
                         
                         outputs = model(
                             input_ids=batch['input_ids'],
@@ -492,6 +544,7 @@ class Trainer:
             
             self.training_status.update({
                 'is_training': False,
+                'is_cancelling': False,
                 'progress': 100,
                 'end_time': datetime.now().isoformat(),
                 'final_val_loss': val_loss,
@@ -504,6 +557,7 @@ class Trainer:
             logger.error(f"Training error: {str(e)}")
             self.training_status.update({
                 'is_training': False,
+                'is_cancelling': False,
                 'error': str(e),
                 'end_time': datetime.now().isoformat()
             })

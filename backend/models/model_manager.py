@@ -41,8 +41,30 @@ class ModelManager:
             for model_dir in os.listdir(MODELS_DIR):
                 model_path = MODELS_DIR / model_dir
                 if model_path.is_dir():
-                    required_files = ['config.json', 'pytorch_model.bin', 'tokenizer.json']
-                    if any((model_path / file).exists() for file in required_files):
+                    has_config = (model_path / 'config.json').exists()
+                    if not has_config:
+                        continue
+
+                    has_tokenizer = any(
+                        (model_path / f).exists()
+                        for f in (
+                            'tokenizer.json',
+                            'tokenizer.model',
+                            'vocab.json',
+                            'merges.txt',
+                            'tokenizer_config.json',
+                        )
+                    )
+
+                    has_weights = (
+                        (model_path / 'pytorch_model.bin').exists()
+                        or (model_path / 'pytorch_model.bin.index.json').exists()
+                        or (model_path / 'model.safetensors').exists()
+                        or (model_path / 'model.safetensors.index.json').exists()
+                        or any(model_path.glob('*.safetensors'))
+                    )
+
+                    if has_weights and has_tokenizer:
                         model_id = model_dir.replace('_', '/')
                         downloaded.append(model_id)
                         

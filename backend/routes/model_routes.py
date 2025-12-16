@@ -9,10 +9,103 @@ from datetime import datetime
 from pathlib import Path
 from huggingface_hub import model_info
 import requests
+try:
+    import sglang as sgl
+except Exception:
+    sgl = None
 
 bp = Blueprint('models', __name__, url_prefix='/api/models')
 logger = logging.getLogger('training')
 model_manager = ModelManager()
+
+# Global variable to hold the SGLang runtime (to avoid reloading)
+sgl_runtime_cache = {}
+
+def _get_context_limit(tokenizer, model):
+    """Return best-effort context limit for the model, or None if unknown."""
+    limits = []
+    tok_limit = getattr(tokenizer, "model_max_length", None)
+    if isinstance(tok_limit, int) and 0 < tok_limit < 10**6:
+        limits.append(tok_limit)
+    cfg = getattr(model, "config", None)
+    cfg_limit = getattr(cfg, "max_position_embeddings", None)
+    if isinstance(cfg_limit, int) and cfg_limit > 0:
+        limits.append(cfg_limit)
+    return min(limits) if limits else None
+
+def _clamp_max_new_tokens(tokenizer, model, input_ids_len: int, requested_max_new_tokens: int) -> int:
+    context_limit = _get_context_limit(tokenizer, model)
+    if not context_limit:
+        return requested_max_new_tokens
+    available = max(1, context_limit - int(input_ids_len))
+    if requested_max_new_tokens <= available:
+        return requested_max_new_tokens
+    logger.warning(
+        f"Clamping max_new_tokens from {requested_max_new_tokens} to {available} "
+        f"to fit within context_limit={context_limit} (input_len={int(input_ids_len)})."
+    )
+    return available
+
+def _sanitize_saved_model_name(name: str) -> str:
+    safe = "".join(c for c in (name or "") if c.isalnum() or c in ("-", "_")).strip()
+    if not safe:
+        raise ValueError("Invalid saved model name")
+    return safe
+
+
+def get_sgl_runtime(model_path_str: str, max_tokens: int, device_type: str):
+    """Helper function to load and cache SGLang runtime."""
+    global sgl_runtime_cache
+    if sgl is None:
+        logger.warning("SGLang is not available; cannot initialise runtime.")
+        return None
+    try:
+        import orjson  # noqa: F401
+    except ModuleNotFoundError:
+        logger.warning("SGLang dependency missing: 'orjson'. Install it to enable SGLang runtime.")
+        return None
+    if model_path_str in sgl_runtime_cache:
+        logger.info(f"Using cached SGLang runtime for {model_path_str}")
+        return sgl_runtime_cache[model_path_str]
+
+    logger.info(f"Initializing SGLang runtime for {model_path_str}")
+    model_config = {
+        "model_path": model_path_str,
+        "tensor_parallel_size": 1,  # Adjust if using multiple GPUs
+        "max_tokens": max_tokens,   # Use max_tokens from request
+        "trust_remote_code": True,
+        "dtype": "float16" if device_type in ('cuda', 'rocm') else "float32"
+    }
+
+    try:
+        # Preflight: if sgl_kernel cannot load (e.g. missing libnvrtc / wrong arch),
+        # don't even attempt runtime initialisation (it can produce noisy destructor errors).
+        try:
+            import sgl_kernel  # noqa: F401
+        except Exception as kernel_e:
+            logger.warning(f"SGLang kernel unavailable; falling back to Transformers. Details: {kernel_e}")
+            sgl_runtime_cache[model_path_str] = None
+            return None
+
+        is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+        if device_type == 'rocm' or (device_type == 'cuda' and is_rocm):
+            sgl.set_default_backend("rocm")
+            logger.info("SGLang: Set default backend to ROCm")
+        elif device_type == 'cuda':
+            sgl.set_default_backend("cuda")
+            logger.info("SGLang: Set default backend to CUDA")
+        else:
+            sgl.set_default_backend("cpu")
+            logger.info("SGLang: Set default backend to CPU")
+
+        runtime = sgl.Runtime(**model_config) # Use ** to unpack config
+        sgl_runtime_cache[model_path_str] = runtime
+        logger.info(f"SGLang runtime initialized successfully for {model_path_str}. Backend: {sgl.get_default_backend()}")
+        return runtime
+    except Exception as e:
+        logger.error(f"Failed to initialize SGLang runtime for {model_path_str}: {e}", exc_info=True)
+        sgl_runtime_cache[model_path_str] = None
+        return None
 
 @bp.route('/available', methods=['GET'])
 def get_available_models():
@@ -38,14 +131,21 @@ def download_model():
 @bp.route('/inference', methods=['POST'])
 def run_inference():
     try:
-        data = request.json
+        data = request.json or {}
+
+        # Backwards-compatible aliases (older frontends)
+        if 'input' not in data and 'prompt' in data:
+            data['input'] = data.get('prompt')
+        if 'max_length' not in data and 'max_tokens' in data:
+            data['max_length'] = data.get('max_tokens')
         
         # Get generation parameters
         temperature = float(data.get('temperature', 0.7))
         max_length = int(data.get('max_length', 512))
         do_sample = bool(data.get('do_sample', True))
+        top_p = float(data.get('top_p', 0.95))
         
-        logger.info(f"Generation parameters: temp={temperature}, max_length={max_length}, do_sample={do_sample}")
+        logger.info(f"Generation parameters: temp={temperature}, max_length={max_length}, do_sample={do_sample}, top_p={top_p}")
         
         model_id = data.get('model_id')
         input_text = data.get('input')
@@ -59,8 +159,7 @@ def run_inference():
                 "message": "Input text is required"
             }), 400
             
-        # Add prompt logging here
-        logger.info(f"Full prompt for inference:\n{input_text}")
+        logger.info(f"Input text (first 100 chars): {input_text[:100]}...")
         
         if not model_id and not saved_model_name:
             logger.error("Neither model_id nor saved_model_name provided")
@@ -69,102 +168,112 @@ def run_inference():
                 "message": "Either model_id or saved_model_name is required"
             }), 400
             
-        # Get model path and load model/tokenizer
-        try:
-            if saved_model_name:
-                model_path = SAVED_MODELS_DIR / saved_model_name
-                logger.info(f"Using saved model: {saved_model_name}")
+        # Determine model path
+        if saved_model_name:
+            try:
+                safe_saved_model_name = _sanitize_saved_model_name(saved_model_name)
+            except ValueError as ve:
+                return jsonify({"status": "error", "message": str(ve)}), 400
+            model_path = SAVED_MODELS_DIR / safe_saved_model_name
+            logger.info(f"Using saved model: {safe_saved_model_name}")
+        else:
+            safe_model_name = model_id.replace('/', '_')
+            model_path = MODELS_DIR / safe_model_name
+            if use_finetuned:
+                # Assuming finetuned models are saved within the base model dir
+                # Adjust if finetuned models are saved elsewhere
+                model_path = model_path / 'finetuned' # Placeholder, adjust path if needed
+                logger.info(f"Using fine-tuned model path: {model_path}")
             else:
-                safe_model_name = model_id.replace('/', '_')
-                model_path = MODELS_DIR / safe_model_name
-                if use_finetuned:
-                    model_path = model_path / 'finetuned'
-                    logger.info(f"Using fine-tuned model")
+                 logger.info(f"Using base model path: {model_path}")
                 
-            if not model_path.exists():
-                return jsonify({
-                    "status": "error",
-                    "message": f"Model not found at {model_path}"
-                }), 404
-                
-            # Load tokenizer first
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-                padding_side='left'  # Add padding to the left
-            )
-            
-            # Set pad token if not set
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            
-            # Get device info
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            device_info = {
-                'type': 'cuda' if torch.cuda.is_available() else 'cpu',
-                'name': torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU',
-                'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB" if torch.cuda.is_available() else 'N/A'
-            }
-            
-            # Load model with proper configuration
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                device_map=device,
-                torch_dtype=torch.float16 if device.type == 'cuda' else torch.float32,
-                trust_remote_code=True
-            )
-            
-            # Ensure model is in eval mode
-            model.eval()
-            
-            # Tokenize input with proper padding
-            inputs = tokenizer(
-                input_text,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=max_length // 2  # Leave room for generation
-            ).to(device)
-            
-            # Generate with safety checks
-            with torch.no_grad():
-                outputs = model.generate(
-                    **inputs,
-                    max_new_tokens=min(max_length, model.config.max_position_embeddings - inputs['input_ids'].shape[1]),
-                    num_return_sequences=1,
-                    temperature=temperature,
-                    do_sample=do_sample,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id,
-                    early_stopping=True
-                )
-            
-            # Decode response
-            response = tokenizer.decode(
-                outputs[0], 
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True
-            )
-            
-            return jsonify({
-                "status": "success",
-                "response": response,
-                "device_info": device_info
-            })
-            
-        except Exception as model_error:
-            logger.error(f"Model error: {str(model_error)}")
+        if not model_path.exists():
+            logger.error(f"Model path not found: {model_path}")
             return jsonify({
                 "status": "error",
-                "message": f"Error processing request: {str(model_error)}"
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"Inference error: {str(e)}")
+                "message": f"Model not found at {model_path}"
+            }), 404
+
+        model_path_str = str(model_path)
+
+        # Get device info (still useful for logging)
+        is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+        device_type = 'rocm' if is_rocm else ('cuda' if torch.cuda.is_available() else 'cpu')
+        device_info = {
+            'type': device_type,
+            'name': torch.cuda.get_device_name(0) if device_type in ('cuda', 'rocm') else 'CPU',
+            'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB" if device_type in ('cuda', 'rocm') else 'N/A'
+        }
+        logger.info(f"Detected device: {device_info['type']} - {device_info['name']} ({device_info['memory']})")
+
+        # Get SGLang runtime (optional). If unavailable, fall back to Transformers generation.
+        sgl_model = get_sgl_runtime(model_path_str, max_length, device_type)
+        if sgl_model is None:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(model_path)
+                model = AutoModelForCausalLM.from_pretrained(model_path)
+                model = model.to(torch.device(device_type))
+                inputs = tokenizer(input_text, return_tensors="pt").to(torch.device(device_type))
+                max_new_tokens = _clamp_max_new_tokens(
+                    tokenizer=tokenizer,
+                    model=model,
+                    input_ids_len=inputs["input_ids"].shape[-1],
+                    requested_max_new_tokens=max_length,
+                )
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=do_sample,
+                        temperature=temperature if do_sample else 0.0,
+                        top_p=top_p if do_sample else 1.0,
+                        pad_token_id=tokenizer.eos_token_id,
+                    )
+                response = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                return jsonify({"status": "success", "response": response, "device_info": device_info})
+            except Exception as fallback_e:
+                return jsonify({"status": "error", "message": f"Inference unavailable: {fallback_e}"}), 500
+
+        # Log memory before generation (if GPU)
+        if device_type in ('cuda', 'rocm'):
+            allocated = torch.cuda.memory_allocated(0) / (1024**3)
+            reserved = torch.cuda.memory_reserved(0) / (1024**3)
+            logger.info(f"GPU memory before generation - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+        # Create generation state
+        state = sgl.RuntimeState(
+            temperature=temperature if do_sample else 0.0, # Set temp to 0 if not sampling
+            top_p=top_p if do_sample else 1.0,
+            max_new_tokens=max_length # Use max_length for max_new_tokens
+        )
+        logger.info(f"SGLang RuntimeState created: temp={state.temperature}, top_p={state.top_p}, max_new_tokens={state.max_new_tokens}")
+
+        # Generate response using SGLang
+        try:
+            response = sgl_model.generate(prompt=input_text, state=state)
+            logger.info("SGLang generation successful.")
+        except Exception as sgl_error:
+            logger.error(f"SGLang generation error: {sgl_error}", exc_info=True)
+            return jsonify({"status": "error", "message": f"SGLang generation failed: {sgl_error}"}), 500
+
+        # Log memory after generation (if GPU)
+        if device_type in ('cuda', 'rocm'):
+            allocated = torch.cuda.memory_allocated(0) / (1024**3)
+            reserved = torch.cuda.memory_reserved(0) / (1024**3)
+            logger.info(f"GPU memory after generation - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+        # Log the model response
+        logger.info(f"Model response (first 100 chars): {response[:100]}...")
+
         return jsonify({
-            "status": "error",
-            "message": str(e)
-        }), 500 
+            "status": "success",
+            "response": response,
+            "device_info": device_info
+        })
+
+    except Exception as e:
+        logger.error(f"Inference endpoint error: {str(e)}", exc_info=True) # Log traceback
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @bp.route('/saved', methods=['GET'])
 def get_saved_models():
@@ -188,8 +297,7 @@ def get_saved_models():
                                     'name': model_dir.name,
                                     'original_model': metadata.get('original_model', ''),
                                     'saved_date': saved_date,
-                                    'description': metadata.get('description', ''),
-                                    'path': str(model_dir)
+                                    'description': metadata.get('description', '')
                                 })
                         except Exception as e:
                             logger.error(f"Error reading metadata for {model_dir}: {str(e)}")
@@ -229,167 +337,208 @@ def cancel_training():
 
 @bp.route('/v1/chat/completions', methods=['POST'])
 def chat_completions():
-    """OpenAI-compatible chat completions endpoint"""
+    """OpenAI-compatible chat completions endpoint using SGLang"""
     try:
         data = request.json
-        
-        # Extract OpenAI-style parameters
         messages = data.get('messages', [])
         if not messages:
-            return jsonify({
-                "error": {
-                    "message": "messages is required",
-                    "type": "invalid_request_error",
-                    "code": "invalid_messages"
-                }
-            }), 400
-            
-        # Get model parameters
-        model = data.get('model')  # This will be mapped to our model ID
-        temperature = float(data.get('temperature', 0.7))
-        max_tokens = int(data.get('max_tokens', 512))
-        top_p = float(data.get('top_p', 0.95))
-        
-        # Convert chat format to text
-        prompt = ""
-        for msg in messages:
-            role = msg.get('role', '')
-            content = msg.get('content', '')
-            if role == 'system':
-                prompt += f"System: {content}\n"
-            elif role == 'user':
-                prompt += f"User: {content}\n"
-            elif role == 'assistant':
-                prompt += f"Assistant: {content}\n"
-        prompt += "Assistant: "
-        
-        # Add prompt logging here
-        logger.info(f"Full chat completion prompt:\n{prompt}")
-        
-        # Check if we're using a saved model
-        model_path = None
-        if model:
-            if SAVED_MODELS_DIR.exists():
-                saved_model_path = SAVED_MODELS_DIR / model
-                if saved_model_path.exists():
-                    model_path = saved_model_path
-                    logger.info(f"Using saved model: {model}")
-        
-        if not model_path:
-            # If not a saved model, treat as a regular model ID
-            safe_model_name = model.replace('/', '_')
-            model_path = MODELS_DIR / safe_model_name
-            logger.info(f"Using base model: {model}")
-        
-        if not model_path.exists():
-            return jsonify({
-                "error": {
-                    "message": f"Model not found at {model_path}",
-                    "type": "invalid_request_error",
-                    "code": "model_not_found"
-                }
-            }), 404
-            
-        # Load tokenizer and model
-        try:
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
-                trust_remote_code=True,
-                padding_side='left'
-            )
-            
-            if tokenizer.pad_token is None:
-                tokenizer.pad_token = tokenizer.eos_token
-            
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            model_instance = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                device_map=device,
-                torch_dtype=torch.float16 if device.type == 'cuda' else torch.float32,
-                trust_remote_code=True
-            )
-            
-            model_instance.eval()
-            
-            # Tokenize and generate
-            inputs = tokenizer(
-                prompt,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=max_tokens // 2
-            ).to(device)
-            
-            with torch.no_grad():
-                outputs = model_instance.generate(
-                    **inputs,
-                    max_new_tokens=min(max_tokens, model_instance.config.max_position_embeddings - inputs['input_ids'].shape[1]),
-                    num_return_sequences=1,
-                    temperature=temperature,
-                    do_sample=True,
-                    top_p=top_p,
-                    pad_token_id=tokenizer.pad_token_id,
-                    eos_token_id=tokenizer.eos_token_id
-                )
-            
-            response = tokenizer.decode(
-                outputs[0],
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=True
-            )
-            
-            # Remove the prompt from the response
-            if response.startswith(prompt):
-                response = response[len(prompt):]
-            
-            # Format response in OpenAI style
-            completion_timestamp = int(datetime.now().timestamp())
-            return jsonify({
-                "id": f"chatcmpl-{completion_timestamp}",
-                "object": "chat.completion",
-                "created": completion_timestamp,
-                "model": model,
-                "choices": [
-                    {
-                        "index": 0,
-                        "message": {
-                            "role": "assistant",
-                            "content": response.strip()
-                        },
-                        "finish_reason": "stop"
-                    }
-                ],
-                "usage": {
-                    "prompt_tokens": len(prompt.split()),
-                    "completion_tokens": len(response.split()),
-                    "total_tokens": len(prompt.split()) + len(response.split())
-                }
-            })
-            
-        except Exception as model_error:
-            logger.error(f"Model error: {str(model_error)}")
-            return jsonify({
-                "error": {
-                    "message": f"Error processing request: {str(model_error)}",
-                    "type": "model_error",
-                    "code": "model_error"
-                }
-            }), 500
-            
-    except Exception as e:
-        logger.error(f"Error in chat completion: {str(e)}")
-        return jsonify({
-            "error": {
-                "message": str(e),
-                "type": "server_error",
-                "code": "internal_error"
-            }
-        }), 500 
+            return jsonify({"error": {"message": "messages is required", "type": "invalid_request_error", "code": "invalid_messages"}}), 400
 
-@bp.route('/add', methods=['POST', 'OPTIONS'])
+        model_id_openai = data.get('model') # Model name from OpenAI request
+        temperature = float(data.get('temperature', 0.7))
+        max_tokens = int(data.get('max_tokens', 512)) # Use max_tokens from request
+        top_p = float(data.get('top_p', 0.95))
+        # stream = data.get('stream', False) # SGLang might support streaming differently
+
+        logger.info(f"Chat parameters: temp={temperature}, max_tokens={max_tokens}, top_p={top_p}")
+
+        # Determine model path (similar logic to /inference)
+        model_path = None
+        if model_id_openai:
+             # Check saved models first
+            try:
+                safe_saved_name = _sanitize_saved_model_name(model_id_openai)
+            except Exception:
+                safe_saved_name = None
+
+            saved_model_path = SAVED_MODELS_DIR / safe_saved_name if safe_saved_name else None
+            if saved_model_path and saved_model_path.exists() and saved_model_path.is_dir():
+                model_path = saved_model_path
+                logger.info(f"Using saved model for chat: {model_id_openai}")
+            else:
+                # Assume it's a base model ID from config
+                safe_model_name = model_id_openai.replace('/', '_')
+                base_model_path = MODELS_DIR / safe_model_name
+                if base_model_path.exists() and base_model_path.is_dir():
+                     model_path = base_model_path
+                     logger.info(f"Using base model for chat: {model_id_openai}")
+
+        if not model_path:
+             logger.error(f"Could not find saved or base model matching: {model_id_openai}")
+             # Maybe try finding the first downloaded model as a fallback? Or error out.
+             return jsonify({"error": {"message": f"Model '{model_id_openai}' not found.", "type": "invalid_request_error", "code": "model_not_found"}}), 404
+
+        model_path_str = str(model_path)
+
+        # Get device info
+        is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
+        device_type = 'rocm' if is_rocm else ('cuda' if torch.cuda.is_available() else 'cpu')
+        device_info = { # Recreate device_info dict here
+            'type': device_type,
+            'name': torch.cuda.get_device_name(0) if device_type in ('cuda', 'rocm') else 'CPU',
+            'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB" if device_type in ('cuda', 'rocm') else 'N/A'
+        }
+        logger.info(f"Chat - Detected device: {device_info['type']} - {device_info['name']} ({device_info['memory']})")
+
+
+        # Get SGLang runtime (optional); if unavailable, return a clear error for now.
+        sgl_model = get_sgl_runtime(model_path_str, max_tokens, device_type) # Pass max_tokens
+        if sgl_model is None:
+            try:
+                tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
+                )
+                model = model.to(torch.device('cuda' if device_type in ('cuda', 'rocm') else 'cpu'))
+
+                prompt = ""
+                for msg in messages:
+                    role = msg.get('role', 'user')
+                    content = msg.get('content', '')
+                    prompt += f"<|{role}|>\n{content}\n"
+                prompt += "<|assistant|>\n"
+
+                inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+                max_new_tokens = _clamp_max_new_tokens(
+                    tokenizer=tokenizer,
+                    model=model,
+                    input_ids_len=inputs["input_ids"].shape[-1],
+                    requested_max_new_tokens=max_tokens,
+                )
+                do_sample = temperature > 0
+                with torch.no_grad():
+                    outputs = model.generate(
+                        **inputs,
+                        max_new_tokens=max_new_tokens,
+                        do_sample=do_sample,
+                        temperature=temperature if do_sample else 0.0,
+                        top_p=top_p if do_sample else 1.0,
+                        pad_token_id=tokenizer.eos_token_id,
+                    )
+                decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
+                response_text = decoded[len(prompt):] if decoded.startswith(prompt) else decoded
+
+                completion_timestamp = int(datetime.now().timestamp())
+                prompt_tokens = len(prompt.split())
+                completion_tokens = len(response_text.split())
+                return jsonify({
+                    "id": f"chatcmpl-{completion_timestamp}",
+                    "object": "chat.completion",
+                    "created": completion_timestamp,
+                    "model": model_id_openai,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {
+                                "role": "assistant",
+                                "content": response_text.strip()
+                            },
+                            "finish_reason": "stop"
+                        }
+                    ],
+                    "usage": {
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                        "total_tokens": prompt_tokens + completion_tokens
+                    }
+                })
+            except Exception as fallback_e:
+                logger.error(f"Chat - Transformers fallback failed: {fallback_e}", exc_info=True)
+                return jsonify({"error": {"message": f"Chat unavailable: {fallback_e}", "type": "server_error"}}), 500
+
+
+        # Format chat messages into a single prompt string suitable for the model
+        # This might need adjustment based on the specific model's chat template
+        # Using a generic approach here - consider AutoTokenizer.apply_chat_template if available/compatible
+        prompt = ""
+        # A simple generic template - replace with model-specific if possible
+        for msg in messages:
+            role = msg.get('role', 'user')
+            content = msg.get('content', '')
+            prompt += f"<|{role}|>\n{content}\n" # Example format
+        prompt += "<|assistant|>\n" # Prompt the model for assistant response
+
+        logger.info(f"Chat Request - Formatted Prompt (first 200 chars): {prompt[:200]}...")
+
+
+        # Log memory before generation (if GPU)
+        if device_type in ('cuda', 'rocm'):
+            allocated = torch.cuda.memory_allocated(0) / (1024**3)
+            reserved = torch.cuda.memory_reserved(0) / (1024**3)
+            logger.info(f"Chat - GPU memory before generation - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+
+        # Create SGLang generation state
+        state = sgl.RuntimeState(
+            temperature=temperature, # Use requested temp
+            top_p=top_p,
+            max_new_tokens=max_tokens # Use requested max_tokens
+        )
+        logger.info(f"Chat - SGLang RuntimeState created: temp={state.temperature}, top_p={state.top_p}, max_new_tokens={state.max_new_tokens}")
+
+        # Generate response using SGLang
+        try:
+            response_text = sgl_model.generate(prompt=prompt, state=state)
+            logger.info("Chat - SGLang generation successful.")
+        except Exception as sgl_error:
+            logger.error(f"Chat - SGLang generation error: {sgl_error}", exc_info=True)
+            return jsonify({"error": {"message": f"SGLang chat generation failed: {sgl_error}", "type": "server_error"}}), 500
+
+        # Log memory after generation (if GPU)
+        if device_type in ('cuda', 'rocm'):
+            allocated = torch.cuda.memory_allocated(0) / (1024**3)
+            reserved = torch.cuda.memory_reserved(0) / (1024**3)
+            logger.info(f"Chat - GPU memory after generation - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
+
+        # Log the raw model response
+        logger.info(f"Chat - Raw Model response (first 100 chars): {response_text[:100]}...")
+
+        # Format response in OpenAI style
+        completion_timestamp = int(datetime.now().timestamp())
+        # Simple token count estimation (replace with precise method if needed)
+        prompt_tokens = len(prompt.split()) # Basic estimate
+        completion_tokens = len(response_text.split()) # Basic estimate
+
+        return jsonify({
+            "id": f"chatcmpl-{completion_timestamp}",
+            "object": "chat.completion",
+            "created": completion_timestamp,
+            "model": model_id_openai, # Return the requested model name
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": response_text.strip() # Use the generated text
+                    },
+                    "finish_reason": "stop" # SGLang doesn't directly provide this, assume stop
+                }
+            ],
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens
+            }
+        })
+
+    except Exception as e:
+        logger.error(f"Chat Completions endpoint error: {str(e)}", exc_info=True) # Log traceback
+        return jsonify({"error": {"message": str(e), "type": "server_error", "code": "internal_error"}}), 500
+
+@bp.route('/add', methods=['POST'])
 def add_model():
-    if request.method == 'OPTIONS':
-        return _build_cors_preflight_response()
     try:
         data = request.json
         model_id = data.get('model_id')
@@ -525,10 +674,8 @@ def add_model():
             "message": str(e)
         }), 500
 
-@bp.route('/delete/<path:model_id>', methods=['DELETE', 'OPTIONS'])
+@bp.route('/delete/<path:model_id>', methods=['DELETE'])
 def delete_model(model_id):
-    if request.method == 'OPTIONS':
-        return _build_cors_preflight_response()
     try:
         config_path = Path(__file__).parent.parent / 'config.json'
         with open(config_path, 'r+') as f:
@@ -558,11 +705,4 @@ def delete_model(model_id):
             "message": str(e)
         }), 500 
 
-def _build_cors_preflight_response():
-    response = jsonify()
-    response.headers.add("Access-Control-Allow-Origin", "*")
-    response.headers.add("Access-Control-Allow-Headers", 
-        "Origin, X-Requested-With, Content-Type, Accept, Authorization")
-    response.headers.add("Access-Control-Allow-Methods", 
-        "GET, POST, PUT, DELETE, OPTIONS")
-    return response 
+    

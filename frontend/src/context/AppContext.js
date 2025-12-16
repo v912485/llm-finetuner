@@ -23,6 +23,11 @@ export const AppProvider = ({ children }) => {
   const [isFetchingDownloadedModels, setIsFetchingDownloadedModels] = useState(false);
   const [isInitialDataFetched, setIsInitialDataFetched] = useState(false);
 
+  const hasAdminToken = useCallback(() => {
+    const token = localStorage.getItem('adminToken');
+    return Boolean(token && token.trim());
+  }, []);
+
   const fetchDownloadedModels = useCallback(async () => {
     // Prevent duplicate API calls
     if (isFetchingDownloadedModels) return;
@@ -63,7 +68,7 @@ export const AppProvider = ({ children }) => {
     try {
       const data = await api.get(apiConfig.endpoints.datasets.downloaded);
       if (data.status === 'success') {
-        setDownloadedDatasets(data.downloaded_datasets || []);
+        setDownloadedDatasets(data.datasets || []);
       }
       return data;
     } catch (error) {
@@ -87,8 +92,8 @@ export const AppProvider = ({ children }) => {
     try {
       const data = await api.get(apiConfig.endpoints.training.status);
       if (data.status === 'success') {
-        setTrainingStatus(data.training_status);
-        setIsTraining(data.training_status?.status === 'training');
+        setTrainingStatus(data);
+        setIsTraining(Boolean(data.is_training));
       }
       return data;
     } catch (error) {
@@ -129,20 +134,21 @@ export const AppProvider = ({ children }) => {
   const fetchInitialData = useCallback(async () => {
     // Prevent duplicate API calls
     if (isInitialDataFetched) return;
+    if (!hasAdminToken()) return;
     
     try {
-      setIsInitialDataFetched(true);
-      
       // Execute API calls sequentially to avoid overwhelming the server
       await fetchDownloadedModels();
       await fetchSavedModels();
       await fetchDownloadedDatasets();
       await fetchConfiguredDatasets();
       await fetchTrainingStatus();
+      setIsInitialDataFetched(true);
     } catch (error) {
       console.error('Error fetching initial data:', error);
+      setIsInitialDataFetched(false);
     }
-  }, [fetchDownloadedModels, fetchSavedModels, fetchDownloadedDatasets, fetchConfiguredDatasets, fetchTrainingStatus, isInitialDataFetched]);
+  }, [fetchDownloadedModels, fetchSavedModels, fetchDownloadedDatasets, fetchConfiguredDatasets, fetchTrainingStatus, hasAdminToken, isInitialDataFetched]);
 
   useEffect(() => {
     fetchInitialData();

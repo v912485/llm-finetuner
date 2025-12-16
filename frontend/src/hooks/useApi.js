@@ -5,6 +5,11 @@ export const useApi = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  const getAuthHeaders = () => {
+    const token = localStorage.getItem('adminToken');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  };
+
   const callApi = async (endpoint, method = 'GET', body = null, options = {}) => {
     setLoading(true);
     setError(null);
@@ -15,7 +20,8 @@ export const useApi = () => {
         method,
         headers: {
           'Content-Type': 'application/json',
-          ...options.headers
+          ...getAuthHeaders(),
+          ...(options.headers || {})
         },
         ...options
       };
@@ -25,10 +31,25 @@ export const useApi = () => {
       }
       
       const response = await fetch(url, fetchOptions);
-      const data = await response.json();
+      const contentType = response.headers.get('content-type') || '';
+      const responseText = await response.text();
+      let data = null;
+      if (contentType.includes('application/json')) {
+        try {
+          data = responseText ? JSON.parse(responseText) : null;
+        } catch (e) {
+          data = null;
+        }
+      }
       
       if (!response.ok) {
-        throw new Error(data.message || 'Something went wrong');
+        const message =
+          (data && data.message) ||
+          (data && data.error && data.error.message) ||
+          (data && data.error && data.error.error && data.error.error.message) ||
+          (responseText && responseText.trim()) ||
+          `Request failed (${response.status})`;
+        throw new Error(message);
       }
       
       setLoading(false);

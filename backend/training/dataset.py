@@ -6,10 +6,12 @@ import logging
 logger = logging.getLogger('training')
 
 class CustomDataset(Dataset):
-    def __init__(self, data, tokenizer):
+    def __init__(self, data, tokenizer, input_field='input', output_field='output'):
         self.data = []
         self.tokenizer = tokenizer
         self.max_length = MAX_LENGTH
+        self.input_field = input_field
+        self.output_field = output_field
         self.stats = {
             'total_items': len(data),
             'valid_items': 0,
@@ -28,9 +30,13 @@ class CustomDataset(Dataset):
         for item in data:
             try:
                 if isinstance(item, dict):
-                    # JSON format
-                    input_text = str(item.get('input', ''))
-                    output_text = str(item.get('output', ''))
+                    # Check if this is messages format
+                    if self.input_field == 'messages' and 'messages' in item:
+                        input_text, output_text = self._extract_from_messages(item['messages'])
+                    else:
+                        # Standard JSON format with configurable fields
+                        input_text = str(item.get(self.input_field, ''))
+                        output_text = str(item.get(self.output_field, ''))
                 elif isinstance(item, list) and len(item) >= 2:
                     # CSV format
                     input_text = str(item[0])
@@ -85,25 +91,91 @@ class CustomDataset(Dataset):
             logger.error("No valid items found in dataset!")
             raise ValueError("Dataset contains no valid items")
 
+    def _extract_from_messages(self, messages):
+        """Extract input and output from OpenAI-style messages array"""
+        if not isinstance(messages, list) or not messages:
+            return '', ''
+        
+        system_parts = []
+        user_content = ''
+        assistant_content = ''
+        
+        for msg in messages:
+            if not isinstance(msg, dict):
+                continue
+            role = msg.get('role', '')
+            content = msg.get('content', '')
+            
+            if role == 'system':
+                if content:
+                    system_parts.append(str(content))
+            elif role == 'user':
+                user_content = content
+            elif role == 'assistant':
+                assistant_content = content
+        
+        combined_input = str(user_content)
+        if system_parts:
+            combined_input = "\n\n".join([*system_parts, combined_input]).strip()
+
+        return combined_input, str(assistant_content)
+
     def __len__(self):
         return len(self.data)
 
     def __getitem__(self, idx):
         item = self.data[idx]
-        text = f"{item['input']}{self.tokenizer.sep_token}{item['output']}"
+        prompt_text = f"{item['input']}{self.tokenizer.sep_token}"
+        output_text = str(item['output'])
         
         try:
-            encoding = self.tokenizer(
-                text,
-                max_length=self.max_length,
-                padding='max_length',
-                truncation=True,
-                return_tensors='pt'
-            )
-            
+            if getattr(self.tokenizer, "pad_token_id", None) is None:
+                if getattr(self.tokenizer, "eos_token", None) is not None:
+                    self.tokenizer.pad_token = self.tokenizer.eos_token
+
+            prompt_ids = self.tokenizer(
+                prompt_text,
+                add_special_tokens=True,
+                truncation=False
+            )["input_ids"]
+            output_ids = self.tokenizer(
+                output_text,
+                add_special_tokens=False,
+                truncation=False
+            )["input_ids"]
+
+            if getattr(self.tokenizer, "eos_token_id", None) is not None:
+                output_ids = output_ids + [self.tokenizer.eos_token_id]
+
+            if not output_ids:
+                output_ids = [self.tokenizer.eos_token_id or 0]
+
+            available_for_prompt = max(1, self.max_length - len(output_ids))
+            if len(prompt_ids) > available_for_prompt:
+                prompt_ids = prompt_ids[:available_for_prompt]
+
+            available_for_output = max(1, self.max_length - len(prompt_ids))
+            if len(output_ids) > available_for_output:
+                output_ids = output_ids[:available_for_output]
+
+            input_ids = prompt_ids + output_ids
+            attention_mask = [1] * len(input_ids)
+
+            pad_token_id = self.tokenizer.pad_token_id if self.tokenizer.pad_token_id is not None else 0
+            if len(input_ids) < self.max_length:
+                pad_len = self.max_length - len(input_ids)
+                input_ids = input_ids + [pad_token_id] * pad_len
+                attention_mask = attention_mask + [0] * pad_len
+
+            labels = [-100] * self.max_length
+            prompt_len = min(len(prompt_ids), self.max_length)
+            for i in range(prompt_len, min(prompt_len + len(output_ids), self.max_length)):
+                labels[i] = input_ids[i]
+
             return {
-                'input_ids': encoding['input_ids'].squeeze(),
-                'attention_mask': encoding['attention_mask'].squeeze()
+                'input_ids': torch.tensor(input_ids, dtype=torch.long),
+                'attention_mask': torch.tensor(attention_mask, dtype=torch.long),
+                'labels': torch.tensor(labels, dtype=torch.long)
             }
         except Exception as e:
             logger.error(f"Error encoding item {idx}: {str(e)}")
@@ -113,5 +185,6 @@ class CustomDataset(Dataset):
             dummy[0] = self.tokenizer.bos_token_id or 0  # Start token
             return {
                 'input_ids': dummy,
-                'attention_mask': torch.zeros(self.max_length, dtype=torch.long)
+                'attention_mask': torch.zeros(self.max_length, dtype=torch.long),
+                'labels': torch.full((self.max_length,), -100, dtype=torch.long)
             } 

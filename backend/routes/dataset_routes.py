@@ -6,6 +6,9 @@ from pathlib import Path
 from datetime import datetime
 from config.settings import DATASETS_DIR, CONFIG_DIR
 import logging
+from uuid import uuid4
+from werkzeug.utils import secure_filename
+from utils.datasets import resolve_dataset_path, split_dataset_filename, load_json_dataset
 
 bp = Blueprint('datasets', __name__, url_prefix='/api/datasets')
 logger = logging.getLogger('training')
@@ -15,86 +18,41 @@ def analyze_file_structure(file_path):
     
     try:
         if ext in ['.json', '.jsonl']:
-            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
-                if ext == '.jsonl':
-                    # For JSONL, try multiple lines if first line fails
-                    for _ in range(5):  # Try first 5 lines
-                        line = f.readline().strip()
-                        if not line:
-                            continue
-                        try:
-                            sample = json.loads(line)
-                            if isinstance(sample, dict):
-                                break
-                        except json.JSONDecodeError:
-                            continue
-                    if not sample:
-                        raise ValueError("Could not find valid JSON line in JSONL file")
-                else:
-                    # For JSON, try multiple strategies
-                    sample = None
-                    errors = []
+            dataset_path = Path(file_path)
+            detected_type = 'jsonl' if ext == '.jsonl' else 'json'
 
-                    # Strategy 1: Try to find a complete object in first few lines
-                    f.seek(0)
-                    buffer = ""
-                    for _ in range(10):  # Try first 10 lines
-                        buffer += f.readline()
-                        try:
-                            # Try to find a complete object
-                            buffer = buffer.strip()
-                            if buffer.startswith('{'):
-                                end_idx = buffer.find('}')
-                                if end_idx > 0:
-                                    potential_obj = buffer[:end_idx + 1]
-                                    sample = json.loads(potential_obj)
-                                    break
-                            elif buffer.startswith('[{'):
-                                end_idx = buffer.find('}]')
-                                if end_idx > 0:
-                                    potential_obj = buffer[1:end_idx + 1]  # Remove outer brackets
-                                    sample = json.loads(potential_obj)
-                                    break
-                        except json.JSONDecodeError as e:
-                            errors.append(f"Line parsing error: {str(e)}")
-                            continue
+            if ext == '.json':
+                try:
+                    with open(dataset_path, 'r', encoding='utf-8', errors='replace') as f:
+                        json.load(f)
+                except json.JSONDecodeError:
+                    detected_type = 'jsonl'
 
-                    # Strategy 2: If still no sample, try reading chunks
-                    if not sample:
-                        f.seek(0)
-                        chunk_size = 4096  # Smaller chunks
-                        content = ''
-                        for _ in range(5):  # Try up to 5 chunks
-                            chunk = f.read(chunk_size)
-                            if not chunk:
-                                break
-                            content += chunk
-                            try:
-                                # Try to find complete objects
-                                if '{' in content and '}' in content:
-                                    start = content.find('{')
-                                    end = content.find('}', start) + 1
-                                    if start >= 0 and end > start:
-                                        potential_obj = content[start:end]
-                                        sample = json.loads(potential_obj)
-                                        break
-                            except json.JSONDecodeError as e:
-                                errors.append(f"Chunk parsing error: {str(e)}")
-                                continue
+            records = load_json_dataset(dataset_path)
+            sample = None
+            for entry in records[:50]:
+                if isinstance(entry, dict):
+                    sample = entry
+                    break
 
-                    if not sample:
-                        error_msg = "\n".join(errors)
-                        raise ValueError(f"Could not parse JSON content. Errors:\n{error_msg}")
+            if sample is None:
+                sample = records[0] if records else {}
 
-                # Validate and return structure
-                if not isinstance(sample, dict):
-                    sample = {"text": str(sample)}  # Fallback for non-object values
+            if not isinstance(sample, dict):
+                sample = {"text": str(sample)}
 
-                return {
-                    'type': 'json',
-                    'fields': list(sample.keys()),
-                    'sample': sample
-                }
+            is_messages_format = False
+            if 'messages' in sample and isinstance(sample['messages'], list):
+                if sample['messages'] and isinstance(sample['messages'][0], dict):
+                    if 'role' in sample['messages'][0] and 'content' in sample['messages'][0]:
+                        is_messages_format = True
+
+            return {
+                'type': detected_type,
+                'fields': list(sample.keys()),
+                'sample': sample,
+                'is_messages_format': is_messages_format
+            }
                 
         elif ext == '.csv':
             with open(file_path, 'r', encoding='utf-8') as f:
@@ -179,7 +137,10 @@ def prepare_dataset():
         return jsonify({"status": "error", "message": "No file selected"}), 400
     
     try:
-        dataset_path = DATASETS_DIR / file.filename
+        dataset_id = uuid4().hex
+        original_name = secure_filename(file.filename) or "dataset"
+        stored_name = f"{dataset_id}_{original_name}"
+        dataset_path = DATASETS_DIR / stored_name
         file.save(dataset_path)
         
         file_structure = analyze_file_structure(dataset_path)
@@ -188,9 +149,9 @@ def prepare_dataset():
         return jsonify({
             "status": "success",
             "message": "Dataset prepared successfully",
-            "dataset_path": str(dataset_path),
+            "dataset_id": dataset_id,
             "file_info": {
-                "name": file.filename,
+                "name": original_name,
                 "size": stats.st_size,
                 "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat(),
                 "structure": file_structure
@@ -207,17 +168,26 @@ def get_configured_datasets():
             for config_file in CONFIG_DIR.glob('*.config.json'):
                 with open(config_file, 'r') as f:
                     dataset_config = json.load(f)
-                    dataset_name = config_file.stem.replace('.config', '')
-                    dataset_path = DATASETS_DIR / f"{dataset_name}.json"
+                    dataset_id = config_file.stem.replace('.config', '')
+                    try:
+                        dataset_path = resolve_dataset_path(DATASETS_DIR, dataset_id)
+                    except Exception:
+                        continue
                     
                     if dataset_path.exists():
                         stats = os.stat(dataset_path)
+                        parsed_id, display_name = split_dataset_filename(dataset_path.name)
+                        safe_config = {
+                            "input_field": dataset_config.get("input_field"),
+                            "output_field": dataset_config.get("output_field"),
+                            "created_at": dataset_config.get("created_at"),
+                        }
                         configured_datasets.append({
-                            "name": dataset_name,
-                            "path": str(dataset_path),
+                            "dataset_id": dataset_id,
+                            "name": display_name,
                             "size": stats.st_size,
                             "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat(),
-                            "config": dataset_config
+                            "config": safe_config
                         })
         
         logger.info(f"Found configured datasets: {configured_datasets}")
@@ -241,9 +211,10 @@ def get_downloaded_datasets():
             for file_path in DATASETS_DIR.iterdir():
                 if file_path.is_file():
                     stats = os.stat(file_path)
+                    dataset_id, display_name = split_dataset_filename(file_path.name)
                     datasets.append({
-                        "name": file_path.name,
-                        "path": str(file_path),
+                        "dataset_id": dataset_id,
+                        "name": display_name,
                         "size": stats.st_size,
                         "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat()
                     })
@@ -263,20 +234,25 @@ def get_downloaded_datasets():
 @bp.route('/structure', methods=['POST'])
 def get_file_structure():
     data = request.json
-    file_path = data.get('file_path')
+    dataset_id = data.get('dataset_id')
     
-    if not file_path:
+    if not dataset_id:
         return jsonify({
             "status": "error",
-            "message": "File path is required"
+            "message": "dataset_id is required"
         }), 400
         
     try:
-        structure = analyze_file_structure(Path(file_path))
+        dataset_path = resolve_dataset_path(DATASETS_DIR, dataset_id)
+        structure = analyze_file_structure(dataset_path)
         return jsonify({
             "status": "success",
             "structure": structure
         })
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
     except Exception as e:
         logger.error(f"Error analyzing file structure: {str(e)}")
         return jsonify({
@@ -295,16 +271,16 @@ def save_dataset_config():
                 "message": "No data provided"
             }), 400
 
-        file_path = data.get('file_path')
+        dataset_id = data.get('dataset_id')
         config = data.get('config')
         
-        logger.info(f"Received config save request for {file_path}: {config}")
+        logger.info(f"Received config save request for dataset_id={dataset_id}: {config}")
         
-        if not file_path or not config:
-            logger.error("Missing file_path or config in request")
+        if not dataset_id or not config:
+            logger.error("Missing dataset_id or config in request")
             return jsonify({
                 "status": "error",
-                "message": "File path and config are required"
+                "message": "dataset_id and config are required"
             }), 400
             
         if not config.get('inputField') or not config.get('outputField'):
@@ -317,15 +293,13 @@ def save_dataset_config():
         # Create config directory if it doesn't exist
         CONFIG_DIR.mkdir(exist_ok=True)
         
-        # Get base filename without extension
-        dataset_name = Path(file_path).stem
-        config_path = CONFIG_DIR / f"{dataset_name}.config.json"
+        config_path = CONFIG_DIR / f"{dataset_id}.config.json"
         
         logger.info(f"Saving config to {config_path}")
         
         # Save full configuration
         full_config = {
-            'file_path': str(file_path),
+            'dataset_id': dataset_id,
             'input_field': config['inputField'],
             'output_field': config['outputField'],
             'created_at': datetime.now().isoformat()
@@ -339,7 +313,7 @@ def save_dataset_config():
         return jsonify({
             "status": "success",
             "message": "Configuration saved successfully",
-            "config_path": str(config_path),
+            "dataset_id": dataset_id,
             "saved_config": full_config
         })
         

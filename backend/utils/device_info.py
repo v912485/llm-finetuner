@@ -80,12 +80,13 @@ ACCELERATOR_AVAILABLE = DEVICE_INFO['type'] == 'cuda'
 
 # Log device information
 if ACCELERATOR_AVAILABLE:
-    logger.info(f"Using {DEVICE_INFO['backend']} on {DEVICE_INFO['name']}")
+    logger.info(f"PyTorch detected GPU: Using {DEVICE_INFO['backend']} on {DEVICE_INFO['name']} for potential acceleration (e.g., training).")
     if 'device_count' in DEVICE_INFO and DEVICE_INFO['device_count'] > 0:
         logger.info(f"Found {DEVICE_INFO['device_count']} GPU(s)")
         for i, device in enumerate(DEVICE_INFO.get('devices', [])):
             logger.info(f"  GPU {i}: {device['name']} with {device['memory']} memory")
 else:
-    logger.warning(f"No GPU acceleration available. Using CPU for training.")
+    logger.warning(f"PyTorch did not detect GPU acceleration. Training will use CPU.")
+    logger.warning(f"Note: SGLang might still utilize GPU for inference if properly configured, independent of this PyTorch check.")
     logger.info(f"System: {DEVICE_INFO['system']['os']}, Python {DEVICE_INFO['system']['python_version']}, PyTorch {DEVICE_INFO['system']['torch_version']}")
     logger.info(f"CPU cores: {DEVICE_INFO['system']['cpu_count']}, Total memory: {DEVICE_INFO['system']['total_memory']}")

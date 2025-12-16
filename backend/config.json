@@ -95,40 +95,11 @@
       }
     },
     {
-      "id": "microsoft/phi-4",
-      "name": "Phi 4",
-      "size_category": "medium",
-      "parameters": "14.7B",
-      "storage_size": "29.3GB",
-      "supports_lora": true,
-      "requirements": {
-        "min_gpu_memory": {
-          "standard": "16GB",
-          "lora": "8GB",
-          "qlora": "4GB"
-        },
-        "recommended_batch_size": {
-          "cuda": {
-            "standard": 1,
-            "lora": 2,
-            "qlora": 4
-          },
-          "rocm": {
-            "standard": 1,
-            "lora": 2,
-            "qlora": 4
-          },
-          "cpu": 1
-        }
-      },
-      "custom": true
-    },
-    {
-      "id": "openai-community/gpt2",
-      "name": "GPT 2",
+      "id": "google/gemma-3-1b-it",
+      "name": "gemma 3 1b it",
       "size_category": "small",
-      "parameters": "137.0M",
-      "storage_size": "13.6GB",
+      "parameters": "999.9M",
+      "storage_size": "10.7GB",
       "description": "No description available",
       "supports_lora": true,
       "requirements": {

@@ -4,18 +4,19 @@ import { useAppContext } from './context/AppContext';
 import ModelSelector from './components/ModelSelector';
 
 function Chat() {
-    const { api, fetchSavedModels } = useAppContext();
+    const { api, fetchSavedModels, isTraining } = useAppContext();
     const [messages, setMessages] = useState([]);
     const [input, setInput] = useState('');
     const [isLoading, setIsLoading] = useState(false);
     const [selectedBaseModel, setSelectedBaseModel] = useState('');
     const [selectedFineTunedModel, setSelectedFineTunedModel] = useState('');
     const [useOpenAIFormat, setUseOpenAIFormat] = useState(true);
+    const [systemPrompt, setSystemPrompt] = useState('');
     const [temperature, setTemperature] = useState(0.7);
     const [maxTokens, setMaxTokens] = useState(4096);
     const [error, setError] = useState(null);
     const messagesEndRef = useRef(null);
-    const modelsFetchedRef = useRef(false);
+    const wasTrainingRef = useRef(false);
 
     // Get the currently active model
     const activeModel = selectedFineTunedModel || selectedBaseModel;
@@ -24,13 +25,13 @@ function Chat() {
         scrollToBottom();
     }, [messages]);
 
-    // Fetch saved models only once when component mounts
+    // Refresh saved models when training completes
     useEffect(() => {
-        if (!modelsFetchedRef.current) {
-            modelsFetchedRef.current = true;
+        if (wasTrainingRef.current && !isTraining) {
             fetchSavedModels();
         }
-    }, []);  // eslint-disable-line react-hooks/exhaustive-deps
+        wasTrainingRef.current = isTraining;
+    }, [isTraining, fetchSavedModels]);
 
     const scrollToBottom = () => {
         messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -50,9 +51,12 @@ function Chat() {
             let response;
             
             if (useOpenAIFormat) {
+                const systemMessage = systemPrompt.trim()
+                    ? [{ role: 'system', content: systemPrompt.trim() }]
+                    : [];
                 const requestBody = {
                     model: activeModel,
-                    messages: [...messages, newMessage],
+                    messages: [...systemMessage, ...messages, newMessage],
                     temperature: temperature,
                     max_tokens: maxTokens,
                 };
@@ -64,29 +68,27 @@ function Chat() {
                 
                 console.log('Chat completions response:', response);
                 
-                if (response.status === 'success' && response.response) {
-                    const assistantMessage = {
-                        role: 'assistant',
-                        content: response.response.choices[0].message.content
-                    };
-                    setMessages(prev => [...prev, assistantMessage]);
-                } else if (response.choices && response.choices[0]?.message) {
-                    // Direct OpenAI format response
+                if (response && response.choices && response.choices[0]?.message) {
                     const assistantMessage = {
                         role: 'assistant',
                         content: response.choices[0].message.content
                     };
                     setMessages(prev => [...prev, assistantMessage]);
+                } else if (response && response.error && response.error.message) {
+                    throw new Error(response.error.message);
                 } else {
-                    throw new Error(response.message || 'Failed to get response');
+                    throw new Error('Failed to get response');
                 }
             } else {
-                const requestBody = {
-                    model_id: activeModel,
-                    prompt: input,
-                    temperature: temperature,
-                    max_tokens: maxTokens,
-                };
+                const requestBody = selectedFineTunedModel
+                    ? { saved_model_name: selectedFineTunedModel }
+                    : { model_id: selectedBaseModel };
+
+                requestBody.input = input;
+                requestBody.temperature = temperature;
+                requestBody.max_length = maxTokens;
+                requestBody.do_sample = true;
+                requestBody.top_p = 0.95;
 
                 response = await api.post(
                     '/models/inference', 
@@ -95,14 +97,7 @@ function Chat() {
                 
                 console.log('Standard inference response:', response);
                 
-                if (response.status === 'success' && response.generated_text) {
-                    const assistantMessage = {
-                        role: 'assistant',
-                        content: response.generated_text
-                    };
-                    setMessages(prev => [...prev, assistantMessage]);
-                } else if (response.status === 'success' && response.response) {
-                    // Alternative response format
+                if (response && response.status === 'success' && response.response) {
                     const assistantMessage = {
                         role: 'assistant',
                         content: response.response
@@ -155,6 +150,18 @@ function Chat() {
                             />
                             Use OpenAI Format
                         </label>
+                    </div>
+
+                    <div className="setting-group">
+                        <label htmlFor="system-prompt">System Prompt (optional)</label>
+                        <textarea
+                            id="system-prompt"
+                            value={systemPrompt}
+                            onChange={(e) => setSystemPrompt(e.target.value)}
+                            placeholder="e.g. You are a classifier... Output ONLY valid JSON..."
+                            rows={6}
+                            disabled={!activeModel}
+                        />
                     </div>
                     
                     <div className="setting-group">

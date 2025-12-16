@@ -7,10 +7,9 @@ bp = Blueprint('settings', __name__, url_prefix='/api/settings')
 
 @bp.route('/huggingface_token', methods=['GET'])
 def get_huggingface_token():
-    token = os.environ.get('HUGGING_FACE_TOKEN', '')
     return jsonify({
         'status': 'success',
-        'token': token
+        'configured': bool(os.environ.get('HUGGING_FACE_TOKEN'))
     })
 
 @bp.route('/huggingface_token', methods=['POST'])
@@ -25,7 +24,7 @@ def save_huggingface_token():
         }), 400
     
     try:
-        env_path = Path('.env')
+        env_path = Path(__file__).parent.parent / '.env'
         if env_path.exists():
             with open(env_path, 'r') as f:
                 lines = f.readlines()

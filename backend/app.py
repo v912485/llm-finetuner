@@ -1,23 +1,47 @@
-from flask import Flask, jsonify
+from flask import Flask, jsonify, request
 from flask_cors import CORS
 from routes import model_routes, training_routes, dataset_routes, settings_routes
 from config.settings import setup_logging
 import os
+from utils.auth import is_request_authenticated
 
 app = Flask(__name__)
 
-# Configure CORS with more restrictive settings
-CORS(app, resources={
-    r"/api/*": {
-        "origins": os.environ.get("ALLOWED_ORIGINS", "*"),
-        "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-        "allow_headers": ["Content-Type", "Authorization"],
-        "supports_credentials": True
-    }
-})
+def _parse_allowed_origins():
+    raw = os.environ.get("ALLOWED_ORIGINS", "")
+    if not raw:
+        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+    return [o.strip() for o in raw.split(",") if o.strip()]
+
+
+# Configure CORS (LAN-safe default: localhost only unless ALLOWED_ORIGINS is set)
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": _parse_allowed_origins(),
+            "methods": ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+            "allow_headers": ["Content-Type", "Authorization"],
+            "supports_credentials": False,
+        }
+    },
+)
 
 # Set up logging
 logger = setup_logging()
+
+# Require auth for all API routes (except health and preflight)
+@app.before_request
+def _require_admin_token():
+    if request.method == "OPTIONS":
+        return None
+    if request.path == "/api/health":
+        return None
+    if not request.path.startswith("/api/"):
+        return None
+    if is_request_authenticated():
+        return None
+    return jsonify({"status": "error", "message": "Unauthorized"}), 401
 
 # Register routes
 app.register_blueprint(model_routes.bp)

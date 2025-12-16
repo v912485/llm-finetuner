@@ -251,6 +251,16 @@
   border: 1px solid #ddd;
 }
 
+.chat-settings textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 8px;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  resize: vertical;
+  font-family: inherit;
+}
+
 .messages-container {
   min-height: 100px;
   max-height: 50vh;
