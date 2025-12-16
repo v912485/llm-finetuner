@@ -19,7 +19,6 @@ function App() {
   const [loading, setLoading] = useState({});
   const [error, setError] = useState({});
   const [uploadProgress, setUploadProgress] = useState(0);
-  const [uploadedFiles, setUploadedFiles] = useState([]);
   const [selectedFiles, setSelectedFiles] = useState([]);
   const [isUploading, setIsUploading] = useState(false);
   const [fileConfig, setFileConfig] = useState({});
@@ -161,7 +160,7 @@ function App() {
     };
 
     fetchInitialData();
-  }, []);
+  }, [getAuthHeaders]);
 
   useEffect(() => {
     let intervalId;
@@ -332,12 +331,6 @@ function App() {
         xhr.send(formData);
       });
       if (data.status === 'success') {
-        setUploadedFiles(prev => [...prev, {
-          dataset_id: data.dataset_id,
-          name: data.file_info.name,
-          size: file.size,
-          uploadedAt: new Date().toLocaleString()
-        }]);
         setFileStructures(prev => ({
           ...prev,
           [data.dataset_id]: data.file_info.structure
@@ -623,7 +616,13 @@ function App() {
       }
     } catch (error) {
       console.error('Error adding model:', error);
-      alert('Error adding model');
+      const message =
+        (error && typeof error.message === 'string' && error.message) ||
+        'Network error';
+      alert(
+        `Error adding model: ${message}\n\n` +
+        `If this is a network/CORS issue, ensure the backend is running and CORS allows this origin.`
+      );
     }
   };
 
@@ -844,59 +843,6 @@ function App() {
                   )}
                 </div>
 
-                {uploadedFiles.length > 0 && (
-                  <div className="uploaded-files">
-                    <h3>Uploaded Datasets</h3>
-                    <div className="files-list">
-                      {uploadedFiles.map((file, index) => {
-                        const isSelected = selectedFiles.includes(file.dataset_id);
-                        const isConfigured = configuredFiles.includes(file.dataset_id);
-                        return (
-                          <div key={index}>
-                            <div className={`file-item ${isSelected ? 'selected' : ''} ${isConfigured ? 'configured' : ''}`}>
-                              <input
-                                type="checkbox"
-                                checked={isSelected}
-                                onChange={() => handleFileSelect(file)}
-                              />
-                              <div className="file-info">
-                                <span className="file-name">{file.name}</span>
-                                <span className="file-size">
-                                  {(file.size / 1024).toFixed(2)} KB
-                                </span>
-                                <span className="file-date">{file.uploadedAt}</span>
-                                <div className="file-status">
-                                  {isConfigured ? (
-                                    <span className="status-badge configured">Configured ✓</span>
-                                  ) : (
-                                    <span className="status-badge unconfigured">Not Configured</span>
-                                  )}
-                                </div>
-                                <button
-                                  className={`config-toggle ${isConfigured ? 'configured' : ''}`}
-                                  onClick={() => {
-                                    if (!isSelected) handleFileSelect(file);
-                                  }}
-                                >
-                                  {isConfigured ? 'Edit Config' : 'Configure'}
-                                </button>
-                              </div>
-                            </div>
-                            {isSelected && (
-                              <div className="file-config-wrapper">
-                                <h4>Configure Training Data Fields</h4>
-                                <p className="config-help">
-                                  Specify which fields in your data file contain the input text and expected output.
-                                </p>
-                                {renderConfigForm(file)}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  </div>
-                )}
               </section>
 
               <section className="training-params">

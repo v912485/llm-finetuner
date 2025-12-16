@@ -49,5 +49,6 @@ Key Conventions:
 3. Use configuration files (e.g., YAML) for hyperparameters and model settings.
 4. Implement proper experiment tracking and model checkpointing.
 5. Use version control (e.g., git) for tracking changes in code and configurations.
+6. THe python environment is under backen/.venv
 
 Refer to the official documentation of PyTorch, Transformers, Diffusers, and Gradio for best practices and up-to-date APIs.

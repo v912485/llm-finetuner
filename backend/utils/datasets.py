@@ -13,6 +13,15 @@ def _is_safe_id(value: str) -> bool:
     return True
 
 
+def _looks_like_uuid_hex32(value: str) -> bool:
+    if len(value) != 32:
+        return False
+    for c in value:
+        if c not in "0123456789abcdef":
+            return False
+    return True
+
+
 def resolve_dataset_path(datasets_dir: Path, dataset_id: str) -> Path:
     """
     Resolve a dataset file from an opaque dataset_id without allowing path traversal.
@@ -44,11 +53,14 @@ def split_dataset_filename(filename: str) -> tuple[str, str]:
     """
     if "_" in filename:
         dataset_id, rest = filename.split("_", 1)
-        if _is_safe_id(dataset_id) and rest:
+        # Only treat the prefix as an opaque dataset_id for new uploads (uuid4().hex).
+        # Legacy datasets may contain underscores in their filenames (e.g. "cvs_text_cleaned.json");
+        # splitting those would create collisions ("cvs") and break selection/config.
+        if _is_safe_id(dataset_id) and _looks_like_uuid_hex32(dataset_id) and rest:
             return dataset_id, rest
 
     stem = Path(filename).stem
-    return stem, filename
+    return stem, stem.replace("_", " ")
 
 
 def _load_jsonl(path: Path) -> list:

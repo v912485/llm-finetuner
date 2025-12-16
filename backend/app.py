@@ -4,13 +4,17 @@ from routes import model_routes, training_routes, dataset_routes, settings_route
 from config.settings import setup_logging
 import os
 from utils.auth import is_request_authenticated
+import re
 
 app = Flask(__name__)
 
 def _parse_allowed_origins():
     raw = os.environ.get("ALLOWED_ORIGINS", "")
     if not raw:
-        return ["http://localhost:3000", "http://127.0.0.1:3000"]
+        return [
+            re.compile(r"^http://localhost(:\d+)?$"),
+            re.compile(r"^http://127\.0\.0\.1(:\d+)?$"),
+        ]
     return [o.strip() for o in raw.split(",") if o.strip()]
 
 
