@@ -123,6 +123,36 @@
         }
       },
       "custom": true
+    },
+    {
+      "id": "Qwen/Qwen3-0.6B-Base",
+      "name": "Qwen3 0.6B Base",
+      "size_category": "small",
+      "parameters": "596.0M",
+      "storage_size": "1.2GB",
+      "description": "No description available",
+      "supports_lora": true,
+      "requirements": {
+        "min_gpu_memory": {
+          "standard": "16GB",
+          "lora": "8GB",
+          "qlora": "4GB"
+        },
+        "recommended_batch_size": {
+          "cuda": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "rocm": {
+            "standard": 1,
+            "lora": 2,
+            "qlora": 4
+          },
+          "cpu": 1
+        }
+      },
+      "custom": true
     }
   ],
   "supported_backends": {

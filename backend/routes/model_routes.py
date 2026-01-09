@@ -2,6 +2,10 @@ from flask import Blueprint, jsonify, request
 from models.model_manager import ModelManager
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from config.settings import MODELS_DIR, SAVED_MODELS_DIR
+try:
+    from peft import PeftModel
+except ImportError:
+    PeftModel = None
 import logging
 import torch
 import json
@@ -20,6 +24,31 @@ model_manager = ModelManager()
 
 # Global variable to hold the SGLang runtime (to avoid reloading)
 sgl_runtime_cache = {}
+
+def _parse_float(data, key: str, default: float, min_value: float | None = None, max_value: float | None = None) -> float:
+    value = data.get(key, default)
+    try:
+        value_f = float(value)
+    except (TypeError, ValueError):
+        value_f = float(default)
+    if min_value is not None and value_f < min_value:
+        return float(min_value)
+    if max_value is not None and value_f > max_value:
+        return float(max_value)
+    return value_f
+
+
+def _parse_int(data, key: str, default: int, min_value: int | None = None, max_value: int | None = None) -> int:
+    value = data.get(key, default)
+    try:
+        value_i = int(value)
+    except (TypeError, ValueError):
+        value_i = int(default)
+    if min_value is not None and value_i < min_value:
+        return int(min_value)
+    if max_value is not None and value_i > max_value:
+        return int(max_value)
+    return value_i
 
 def _get_context_limit(tokenizer, model):
     """Return best-effort context limit for the model, or None if unknown."""
@@ -53,6 +82,74 @@ def _sanitize_saved_model_name(name: str) -> str:
     return safe
 
 
+def _load_model_and_tokenizer(model_path: Path, device_type: str):
+    """Helper to load model and tokenizer, handling both base models and LoRA adapters."""
+    # Check if it's a LoRA adapter
+    is_peft = (model_path / "adapter_config.json").exists()
+    
+    if is_peft:
+        logger.info(f"Loading LoRA adapter from {model_path}")
+        # Load metadata to find the base model
+        base_model_id = None
+        metadata_path = model_path / "metadata.json"
+        if metadata_path.exists():
+            try:
+                with open(metadata_path, 'r') as f:
+                    metadata = json.load(f)
+                    base_model_id = metadata.get('original_model') or metadata.get('base_model_id')
+            except Exception as e:
+                logger.warning(f"Error reading metadata.json: {e}")
+        
+        if not base_model_id:
+            # Try training_config.json
+            config_path = model_path / "training_config.json"
+            if config_path.exists():
+                try:
+                    with open(config_path, 'r') as f:
+                        t_config = json.load(f)
+                        base_model_id = t_config.get('model_id')
+                except Exception as e:
+                    logger.warning(f"Error reading training_config.json: {e}")
+
+        if not base_model_id:
+            raise ValueError(f"Could not determine base model for adapter at {model_path}")
+
+        logger.info(f"Base model identified: {base_model_id}")
+
+        # Determine base model path
+        safe_base_name = base_model_id.replace('/', '_')
+        base_model_path = MODELS_DIR / safe_base_name
+        
+        if not base_model_path.exists():
+            raise ValueError(f"Base model {base_model_id} not found at {base_model_path}. Please download it first.")
+
+        # Load tokenizer from base model path
+        tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+        
+        # Load base model
+        base_model = AutoModelForCausalLM.from_pretrained(
+            base_model_path,
+            trust_remote_code=True,
+            torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
+        )
+        
+        # Load PEFT model
+        if PeftModel is None:
+            raise ValueError("PEFT library not installed; cannot load LoRA adapter.")
+        model = PeftModel.from_pretrained(base_model, model_path)
+        return model, tokenizer
+    else:
+        # Standard model
+        logger.info(f"Loading standard model from {model_path}")
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_path,
+            trust_remote_code=True,
+            torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
+        )
+        return model, tokenizer
+
+
 def get_sgl_runtime(model_path_str: str, max_tokens: int, device_type: str):
     """Helper function to load and cache SGLang runtime."""
     global sgl_runtime_cache
@@ -67,6 +164,12 @@ def get_sgl_runtime(model_path_str: str, max_tokens: int, device_type: str):
     if model_path_str in sgl_runtime_cache:
         logger.info(f"Using cached SGLang runtime for {model_path_str}")
         return sgl_runtime_cache[model_path_str]
+
+    # Skip SGLang for LoRA adapters for now, as it requires special base model handling
+    if (Path(model_path_str) / "adapter_config.json").exists():
+        logger.info(f"SGLang: Detected LoRA adapter at {model_path_str}. Falling back to Transformers for LoRA support.")
+        sgl_runtime_cache[model_path_str] = None
+        return None
 
     logger.info(f"Initializing SGLang runtime for {model_path_str}")
     model_config = {
@@ -140,12 +243,21 @@ def run_inference():
             data['max_length'] = data.get('max_tokens')
         
         # Get generation parameters
-        temperature = float(data.get('temperature', 0.7))
-        max_length = int(data.get('max_length', 512))
+        temperature = _parse_float(data, 'temperature', 0.7, min_value=0.0, max_value=5.0)
+        max_length = _parse_int(data, 'max_length', 512, min_value=1, max_value=1000000)
         do_sample = bool(data.get('do_sample', True))
-        top_p = float(data.get('top_p', 0.95))
-        
-        logger.info(f"Generation parameters: temp={temperature}, max_length={max_length}, do_sample={do_sample}, top_p={top_p}")
+        top_p = _parse_float(data, 'top_p', 0.95, min_value=0.0, max_value=1.0)
+        top_k = _parse_int(data, 'top_k', 0, min_value=0, max_value=1000000)
+        typical_p = _parse_float(data, 'typical_p', 1.0, min_value=0.0, max_value=1.0)
+        repetition_penalty = _parse_float(data, 'repetition_penalty', 1.0, min_value=0.0, max_value=10.0)
+        no_repeat_ngram_size = _parse_int(data, 'no_repeat_ngram_size', 0, min_value=0, max_value=1000000)
+
+        logger.info(
+            "Generation parameters: "
+            f"temp={temperature}, max_length={max_length}, do_sample={do_sample}, "
+            f"top_p={top_p}, top_k={top_k}, typical_p={typical_p}, "
+            f"repetition_penalty={repetition_penalty}, no_repeat_ngram_size={no_repeat_ngram_size}"
+        )
         
         model_id = data.get('model_id')
         input_text = data.get('input')
@@ -210,8 +322,7 @@ def run_inference():
         sgl_model = get_sgl_runtime(model_path_str, max_length, device_type)
         if sgl_model is None:
             try:
-                tokenizer = AutoTokenizer.from_pretrained(model_path)
-                model = AutoModelForCausalLM.from_pretrained(model_path)
+                model, tokenizer = _load_model_and_tokenizer(model_path, device_type)
                 model = model.to(torch.device(device_type))
                 inputs = tokenizer(input_text, return_tensors="pt").to(torch.device(device_type))
                 max_new_tokens = _clamp_max_new_tokens(
@@ -220,6 +331,11 @@ def run_inference():
                     input_ids_len=inputs["input_ids"].shape[-1],
                     requested_max_new_tokens=max_length,
                 )
+                generate_kwargs = {}
+                if repetition_penalty != 1.0:
+                    generate_kwargs["repetition_penalty"] = float(repetition_penalty)
+                if no_repeat_ngram_size:
+                    generate_kwargs["no_repeat_ngram_size"] = int(no_repeat_ngram_size)
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
@@ -227,7 +343,10 @@ def run_inference():
                         do_sample=do_sample,
                         temperature=temperature if do_sample else 0.0,
                         top_p=top_p if do_sample else 1.0,
+                        top_k=top_k if do_sample else 0,
+                        typical_p=typical_p if do_sample else 1.0,
                         pad_token_id=tokenizer.eos_token_id,
+                        **generate_kwargs,
                     )
                 response = tokenizer.decode(outputs[0], skip_special_tokens=True)
                 return jsonify({"status": "success", "response": response, "device_info": device_info})
@@ -241,6 +360,11 @@ def run_inference():
             logger.info(f"GPU memory before generation - Allocated: {allocated:.2f}GB, Reserved: {reserved:.2f}GB")
 
         # Create generation state
+        if repetition_penalty != 1.0 or no_repeat_ngram_size or top_k or typical_p != 1.0:
+            logger.info(
+                "SGLang generation: repetition_penalty/no_repeat_ngram_size/top_k/typical_p are not applied "
+                "(not supported via RuntimeState here)."
+            )
         state = sgl.RuntimeState(
             temperature=temperature if do_sample else 0.0, # Set temp to 0 if not sampling
             top_p=top_p if do_sample else 1.0,
@@ -345,12 +469,20 @@ def chat_completions():
             return jsonify({"error": {"message": "messages is required", "type": "invalid_request_error", "code": "invalid_messages"}}), 400
 
         model_id_openai = data.get('model') # Model name from OpenAI request
-        temperature = float(data.get('temperature', 0.7))
-        max_tokens = int(data.get('max_tokens', 512)) # Use max_tokens from request
-        top_p = float(data.get('top_p', 0.95))
+        temperature = _parse_float(data, 'temperature', 0.7, min_value=0.0, max_value=5.0)
+        max_tokens = _parse_int(data, 'max_tokens', 512, min_value=1, max_value=1000000) # Use max_tokens from request
+        top_p = _parse_float(data, 'top_p', 0.95, min_value=0.0, max_value=1.0)
+        top_k = _parse_int(data, 'top_k', 0, min_value=0, max_value=1000000)
+        typical_p = _parse_float(data, 'typical_p', 1.0, min_value=0.0, max_value=1.0)
+        repetition_penalty = _parse_float(data, 'repetition_penalty', 1.0, min_value=0.0, max_value=10.0)
+        no_repeat_ngram_size = _parse_int(data, 'no_repeat_ngram_size', 0, min_value=0, max_value=1000000)
         # stream = data.get('stream', False) # SGLang might support streaming differently
 
-        logger.info(f"Chat parameters: temp={temperature}, max_tokens={max_tokens}, top_p={top_p}")
+        logger.info(
+            "Chat parameters: "
+            f"temp={temperature}, max_tokens={max_tokens}, top_p={top_p}, top_k={top_k}, typical_p={typical_p}, "
+            f"repetition_penalty={repetition_penalty}, no_repeat_ngram_size={no_repeat_ngram_size}"
+        )
 
         # Determine model path (similar logic to /inference)
         model_path = None
@@ -395,12 +527,7 @@ def chat_completions():
         sgl_model = get_sgl_runtime(model_path_str, max_tokens, device_type) # Pass max_tokens
         if sgl_model is None:
             try:
-                tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-                model = AutoModelForCausalLM.from_pretrained(
-                    model_path,
-                    trust_remote_code=True,
-                    torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
-                )
+                model, tokenizer = _load_model_and_tokenizer(model_path, device_type)
                 model = model.to(torch.device('cuda' if device_type in ('cuda', 'rocm') else 'cpu'))
 
                 prompt = ""
@@ -418,6 +545,11 @@ def chat_completions():
                     requested_max_new_tokens=max_tokens,
                 )
                 do_sample = temperature > 0
+                generate_kwargs = {}
+                if repetition_penalty != 1.0:
+                    generate_kwargs["repetition_penalty"] = float(repetition_penalty)
+                if no_repeat_ngram_size:
+                    generate_kwargs["no_repeat_ngram_size"] = int(no_repeat_ngram_size)
                 with torch.no_grad():
                     outputs = model.generate(
                         **inputs,
@@ -425,7 +557,10 @@ def chat_completions():
                         do_sample=do_sample,
                         temperature=temperature if do_sample else 0.0,
                         top_p=top_p if do_sample else 1.0,
+                        top_k=top_k if do_sample else 0,
+                        typical_p=typical_p if do_sample else 1.0,
                         pad_token_id=tokenizer.eos_token_id,
+                        **generate_kwargs,
                     )
                 decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
                 response_text = decoded[len(prompt):] if decoded.startswith(prompt) else decoded
@@ -481,6 +616,11 @@ def chat_completions():
 
 
         # Create SGLang generation state
+        if repetition_penalty != 1.0 or no_repeat_ngram_size or top_k or typical_p != 1.0:
+            logger.info(
+                "SGLang chat generation: repetition_penalty/no_repeat_ngram_size/top_k/typical_p are not applied "
+                "(not supported via RuntimeState here)."
+            )
         state = sgl.RuntimeState(
             temperature=temperature, # Use requested temp
             top_p=top_p,

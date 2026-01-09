@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from training.trainer_instance import trainer
+from training.trainer import Trainer
 import logging
 import json
 from datetime import datetime
@@ -9,6 +9,9 @@ import shutil
 
 bp = Blueprint('training', __name__, url_prefix='/api/training')
 logger = logging.getLogger('training')
+
+# Initialize trainer
+trainer = Trainer()
 
 @bp.route('/start', methods=['POST'])
 def start_training():

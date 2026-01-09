@@ -26,6 +26,7 @@ function App() {
   const [fileStructures, setFileStructures] = useState({});
   const [trainingStatus, setTrainingStatus] = useState(null);
   const [isTraining, setIsTraining] = useState(false);
+  const [dismissedTrainingError, setDismissedTrainingError] = useState(null);
   const [downloadedModels, setDownloadedModels] = useState([]);
   const [downloadedDatasets, setDownloadedDatasets] = useState([]);
   const [trainingMethod, setTrainingMethod] = useState('standard');
@@ -101,14 +102,27 @@ function App() {
       const data = await response.json();
       if (data.status === 'success') {
         setTrainingStatus(data);
-        if (!data.is_training) {
-          setIsTraining(false);
-        }
+        setIsTraining(Boolean(data.is_training));
       }
     } catch (error) {
       console.error('Error fetching training status:', error);
     }
   }, [getAuthHeaders]);
+
+  useEffect(() => {
+    fetchTrainingStatus();
+  }, [fetchTrainingStatus]);
+
+  useEffect(() => {
+    const trainingError = trainingStatus?.error || null;
+    if (!trainingError) {
+      if (dismissedTrainingError !== null) setDismissedTrainingError(null);
+      return;
+    }
+    if (dismissedTrainingError && dismissedTrainingError !== trainingError) {
+      setDismissedTrainingError(null);
+    }
+  }, [trainingStatus, dismissedTrainingError]);
 
   useEffect(() => {
     fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.config}`, {
@@ -456,6 +470,8 @@ function App() {
       return;
     }
 
+    setDismissedTrainingError(null);
+    setTrainingStatus(null);
     setIsTraining(true);
     try {
       const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.start}`, {
@@ -482,6 +498,7 @@ function App() {
       const data = await response.json();
       if (data.status === 'success') {
         console.log('Training started successfully');
+        fetchTrainingStatus();
       } else {
         console.error('Error starting training:', data.message);
         setIsTraining(false);
@@ -984,9 +1001,18 @@ function App() {
                           <span>{trainingStatus.loss.toFixed(4)}</span>
                         </div>
                       )}
-                      {trainingStatus.error && (
-                        <div className="status-error">
-                          Error: {trainingStatus.error}
+                      {trainingStatus.error && dismissedTrainingError !== trainingStatus.error && (
+                        <div className="status-error" role="alert">
+                          <span>Error: {trainingStatus.error}</span>
+                          <button
+                            type="button"
+                            className="status-error-dismiss"
+                            onClick={() => setDismissedTrainingError(trainingStatus.error)}
+                            aria-label="Dismiss training error"
+                            title="Dismiss"
+                          >
+                            ×
+                          </button>
                         </div>
                       )}
                     </div>
@@ -1004,7 +1030,10 @@ function App() {
                   </div>
                 )}
 
-                {trainingStatus && trainingStatus.progress === 100 && !trainingStatus.error && (
+                {trainingStatus &&
+                  !trainingStatus.is_training &&
+                  !trainingStatus.error &&
+                  (Number(trainingStatus.progress) >= 100 || Boolean(trainingStatus.end_time)) && (
                   <div className="save-model-section">
                     <button 
                       className="save-model-button"

@@ -2,7 +2,11 @@ import json
 import os
 from pathlib import Path
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from config.settings import MODELS_DIR, HF_TOKEN
+from config.settings import MODELS_DIR, SAVED_MODELS_DIR, HF_TOKEN
+try:
+    from peft import PeftModel
+except ImportError:
+    PeftModel = None
 import logging
 from flask import jsonify
 from training.trainer_instance import trainer
@@ -150,27 +154,58 @@ class ModelManager:
     def generate_response(self, model_id, input_text, temperature=0.7, max_length=512, top_p=0.95):
         """Generate a response using the specified model with OpenAI-compatible parameters"""
         try:
-            # Convert model ID to safe directory name
-            safe_dir_name = model_id.replace('/', '_')
-            model_path = MODELS_DIR / safe_dir_name
+            # Check if it's a saved model name first
+            model_path = SAVED_MODELS_DIR / model_id
+            if not model_path.exists():
+                # Fallback to base model
+                safe_dir_name = model_id.replace('/', '_')
+                model_path = MODELS_DIR / safe_dir_name
             
             if not model_path.exists():
                 raise ValueError(f"Model {model_id} not found. Please download it first.")
             
             # Load model and tokenizer
-            tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
-                trust_remote_code=True
-            )
-            model = AutoModelForCausalLM.from_pretrained(
-                model_path,
-                device_map=None,  # Disable auto device mapping
-                trust_remote_code=True,
-                torch_dtype=torch.float32
-            )
+            is_peft = (model_path / "adapter_config.json").exists()
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            
+            if is_peft:
+                logger.info(f"Loading LoRA adapter from {model_path}")
+                # Load metadata to find the base model
+                base_model_id = None
+                metadata_path = model_path / "metadata.json"
+                if metadata_path.exists():
+                    with open(metadata_path, 'r') as f:
+                        metadata = json.load(f)
+                        base_model_id = metadata.get('original_model') or metadata.get('base_model_id')
+                
+                if not base_model_id:
+                    raise ValueError(f"Could not determine base model for adapter at {model_path}")
+
+                safe_base_name = base_model_id.replace('/', '_')
+                base_model_path = MODELS_DIR / safe_base_name
+                
+                if not base_model_path.exists():
+                    raise ValueError(f"Base model {base_model_id} not found at {base_model_path}")
+
+                tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+                base_model = AutoModelForCausalLM.from_pretrained(
+                    base_model_path,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float32
+                )
+                if PeftModel is None:
+                    raise ValueError("PEFT library not installed; cannot load LoRA adapter.")
+                model = PeftModel.from_pretrained(base_model, model_path)
+            else:
+                tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+                model = AutoModelForCausalLM.from_pretrained(
+                    model_path,
+                    device_map=None,
+                    trust_remote_code=True,
+                    torch_dtype=torch.float32
+                )
             
             # Move model to device
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             model = model.to(device)
             
             # Tokenize input

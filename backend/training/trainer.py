@@ -71,18 +71,21 @@ class Trainer:
         if LoraConfig is None or TaskType is None:
             raise RuntimeError("peft is not installed; LoRA/QLoRA training is unavailable on this server.")
 
-        target_modules = {
-            'gpt2': ["c_attn"],
-            'facebook/opt': ["q_proj", "v_proj"],
-            'google/gemma': ["q_proj", "v_proj"],
-            'default': ["query", "value"]
-        }
-
-        model_prefix = next(
-            (prefix for prefix in target_modules.keys() if model_id.startswith(prefix)),
-            'default'
-        )
-        modules = target_modules[model_prefix]
+        # Modern LLMs (Llama, Qwen, Mistral, Gemma, etc.) usually use q_proj, v_proj
+        # GPT-2 uses c_attn
+        # Older models might use query, value
+        
+        model_id_lower = model_id.lower()
+        
+        if 'gpt2' in model_id_lower:
+            modules = ["c_attn"]
+        elif any(x in model_id_lower for x in ['llama', 'qwen', 'gemma', 'opt', 'mistral', 'deepseek', 'phi']):
+            modules = ["q_proj", "v_proj"]
+        else:
+            # Default to q_proj, v_proj as it's standard for modern causal LMs
+            modules = ["q_proj", "v_proj"]
+            
+        logger.info(f"Selected target modules {modules} for model {model_id}")
 
         if use_qlora:
             bnb_config = BitsAndBytesConfig(
@@ -122,12 +125,23 @@ class Trainer:
                 'is_training': True,
                 'is_cancelling': False,
                 'progress': 0,
+                'error': None,
                 'start_time': datetime.now().isoformat(),
+                'end_time': None,
                 'model_id': config['model_id'],
                 'dataset_info': config['datasets'],
                 'current_epoch': 1,  # Start at 1 instead of 0
                 'total_epochs': num_epochs,
-                'learning_rate': config.get('params', {}).get('learningRate', 0.0001)
+                'learning_rate': config.get('params', {}).get('learningRate', 0.0001),
+                'loss': None,
+                'train_loss': None,
+                'val_loss': None,
+                'final_val_loss': None,
+                'best_val_loss': None,
+                'current_metrics': None,
+                'current_step': None,
+                'total_steps': None,
+                'history': []
             })
 
             # Start training in a separate thread
@@ -189,6 +203,8 @@ class Trainer:
             batch_size = int(params.get('batchSize', BATCH_SIZE))
             learning_rate = float(params.get('learningRate', 0.0001))
             training_method = params.get('training_method', 'standard')
+            max_length = int(params.get('maxLength', MAX_LENGTH))
+            grad_accum_steps = int(params.get('gradientAccumulationSteps', GRADIENT_ACCUMULATION_STEPS))
             
             logger.info(f"Training parameters:")
             logger.info(f"- Device: {self.device}")
@@ -197,6 +213,8 @@ class Trainer:
             logger.info(f"- Learning rate: {learning_rate}")
             logger.info(f"- Validation split: {validation_split}")
             logger.info(f"- Training method: {training_method}")
+            logger.info(f"- Max length: {max_length}")
+            logger.info(f"- Gradient accumulation steps: {grad_accum_steps}")
             
             # First load model and tokenizer
             safe_model_name = model_id.replace('/', '_')
@@ -325,6 +343,10 @@ class Trainer:
             train_dataset = CustomDataset(train_data, tokenizer, input_field, output_field)
             val_dataset = CustomDataset(val_data, tokenizer, input_field, output_field)
             
+            # Update max_length if provided
+            train_dataset.max_length = max_length
+            val_dataset.max_length = max_length
+            
             train_dataloader = DataLoader(
                 train_dataset,
                 batch_size=batch_size,
@@ -402,50 +424,59 @@ class Trainer:
                         })
                         return
 
-                    # Move batch to device and ensure it stays there
-                    batch = {k: v.to(self.device) for k, v in batch.items()}
-                    labels = batch['labels'] if 'labels' in batch else batch['input_ids'].clone()
-                    
-                    # Clear CUDA cache periodically
-                    if step % 10 == 0 and torch.cuda.is_available():
-                        torch.cuda.empty_cache()
-                    
-                    outputs = model(
-                        input_ids=batch['input_ids'],
-                        attention_mask=batch['attention_mask'],
-                        labels=labels
-                    )
-                    
-                    loss = outputs.loss
-                    if not loss.requires_grad:
-                        raise RuntimeError("Loss does not require grad; training cannot proceed (model likely frozen or grad disabled).")
-                    train_loss += loss.item()
-                    loss.backward()
-                    
-                    if (step + 1) % GRADIENT_ACCUMULATION_STEPS == 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                        optimizer.step()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                    
-                    # Flush remaining gradients at end of epoch
-                    if step == num_train_batches - 1 and (step + 1) % GRADIENT_ACCUMULATION_STEPS != 0:
-                        torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-                        optimizer.step()
-                        scheduler.step()
-                        optimizer.zero_grad()
-                    
-                    current_step += 1
-                    # Update progress based on total steps
-                    progress = (current_step / total_steps) * 100
-                    
-                    self.training_status.update({
-                        'progress': round(progress, 2),
-                        'loss': loss.item(),
-                        'current_step': step + 1,
-                        'total_steps': len(train_dataloader),
-                        'train_loss': train_loss / (step + 1)
-                    })
+                    try:
+                        # Move batch to device and ensure it stays there
+                        batch = {k: v.to(self.device) for k, v in batch.items()}
+                        labels = batch['labels'] if 'labels' in batch else batch['input_ids'].clone()
+                        
+                        # More frequent CUDA cache clearing
+                        if step % 5 == 0 and torch.cuda.is_available():
+                            torch.cuda.empty_cache()
+                        
+                        outputs = model(
+                            input_ids=batch['input_ids'],
+                            attention_mask=batch['attention_mask'],
+                            labels=labels
+                        )
+                        
+                        loss = outputs.loss
+                        if not loss.requires_grad:
+                            raise RuntimeError("Loss does not require grad; training cannot proceed (model likely frozen or grad disabled).")
+                        
+                        train_loss += loss.item()
+                        loss.backward()
+                        
+                        if (step + 1) % grad_accum_steps == 0:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                            optimizer.step()
+                            scheduler.step()
+                            optimizer.zero_grad()
+                        
+                        # Flush remaining gradients at end of epoch
+                        if step == num_train_batches - 1 and (step + 1) % grad_accum_steps != 0:
+                            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                            optimizer.step()
+                            scheduler.step()
+                            optimizer.zero_grad()
+
+                        current_step += 1
+                        # Update progress based on total steps
+                        progress = (current_step / total_steps) * 100
+                        
+                        self.training_status.update({
+                            'progress': round(progress, 2),
+                            'loss': loss.item(),
+                            'current_step': step + 1,
+                            'total_steps': len(train_dataloader),
+                            'train_loss': train_loss / (step + 1)
+                        })
+                    except RuntimeError as e:
+                        if "out of memory" in str(e):
+                            logger.error(f"OOM Error during training step {step}: {str(e)}")
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+                            raise RuntimeError("GPU Out of Memory. Try reducing batch size or sequence length.") from e
+                        raise e
                 
                 # Validation phase
                 model.eval()
@@ -547,6 +578,7 @@ class Trainer:
                 'is_cancelling': False,
                 'progress': 100,
                 'end_time': datetime.now().isoformat(),
+                'error': None,
                 'final_val_loss': val_loss,
                 'best_val_loss': best_val_loss
             })
