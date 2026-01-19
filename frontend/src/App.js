@@ -685,6 +685,28 @@ function App() {
     }
   };
 
+  const handleDeleteDownloadedModel = async (modelId) => {
+    if (!window.confirm('Are you sure you want to delete the downloaded files for this model?')) return;
+
+    try {
+      const encodedModelId = encodeURIComponent(modelId);
+      const response = await fetch(
+        `${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.deleteDownloaded}/${encodedModelId}`,
+        { method: 'DELETE', headers: getAuthHeaders() }
+      );
+      const data = await response.json();
+      if (data.status === 'success') {
+        setDownloadedModels(prev => prev.filter(id => id !== modelId));
+        setSelectedModel(prev => (prev === modelId ? null : prev));
+      } else {
+        alert(data.message || 'Failed to delete downloaded model files');
+      }
+    } catch (error) {
+      console.error('Error deleting downloaded model files:', error);
+      alert('Error deleting downloaded model files');
+    }
+  };
+
   const handleDatasetDelete = async (datasetId) => {
     if (!window.confirm('Are you sure you want to delete this dataset?')) return;
 
@@ -827,6 +849,12 @@ function App() {
                                 onClick={() => handleModelSelect(model.id)}
                               >
                                 {model.id === selectedModel ? 'Selected for Training ✓' : 'Select for Training'}
+                              </button>
+                              <button
+                                className="delete-model-button"
+                                onClick={() => handleDeleteDownloadedModel(model.id)}
+                              >
+                                Remove Files
                               </button>
                               {model.custom && (
                                 <button 

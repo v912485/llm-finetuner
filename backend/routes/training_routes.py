@@ -1,5 +1,5 @@
 from flask import Blueprint, jsonify, request
-from training.trainer import Trainer
+from training.trainer_instance import trainer
 import logging
 import json
 from datetime import datetime
@@ -10,20 +10,10 @@ import shutil
 bp = Blueprint('training', __name__, url_prefix='/api/training')
 logger = logging.getLogger('training')
 
-# Initialize trainer
-trainer = Trainer()
-
 @bp.route('/start', methods=['POST'])
 def start_training():
     logger.info("Received training start request")
-    
-    if trainer.is_training():
-        logger.warning("Training already in progress")
-        return jsonify({
-            "status": "error",
-            "message": "Training is already in progress"
-        }), 400
-    
+
     data = request.json
     logger.info(f"Training request data: {data}")
     
@@ -35,11 +25,15 @@ def start_training():
         }), 400
     
     try:
-        trainer.start_training(data)
+        run_id = trainer.start_training(data)
+        status = trainer.get_status()
         logger.info("Training started successfully")
         return jsonify({
             "status": "success",
-            "message": "Training started successfully"
+            "message": "Training started successfully",
+            "run_id": run_id,
+            "queue_position": status.get('queue_position'),
+            "queue_length": status.get('queue_length')
         })
     except Exception as e:
         logger.error(f"Error starting training: {str(e)}")

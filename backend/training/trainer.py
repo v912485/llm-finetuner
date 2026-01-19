@@ -11,6 +11,7 @@ import os
 import json
 from pathlib import Path
 import random
+import uuid
 from utils.datasets import resolve_dataset_path, load_json_dataset
 import threading
 
@@ -42,12 +43,21 @@ class Trainer:
             'total_steps': None,
             'learning_rate': None,
             'device_info': DEVICE_INFO,
-            'history': []  # Add history array to track metrics
+            'history': [],  # Add history array to track metrics
+            'queue_length': 0,
+            'queue_position': None,
+            'queued_runs': [],
+            'active_run_id': None,
+            'current_run_id': None
         }
         self.device = torch.device('cuda' if ACCELERATOR_AVAILABLE else 'cpu')
         self.is_rocm = hasattr(torch.version, 'hip') and torch.version.hip is not None
         self._cancel_event = threading.Event()
         self._training_thread = None
+        self._queue = []
+        self._queue_lock = threading.Lock()
+        self._queue_thread = None
+        self._active_run_id = None
         
         # Log device information at initialization
         logger.info(f"Trainer initialized with device: {self.device}")
@@ -66,6 +76,129 @@ class Trainer:
 
     def get_status(self):
         return self.training_status
+
+    def _generate_run_id(self):
+        timestamp = datetime.utcnow().strftime('%Y%m%d_%H%M%S')
+        return f"{timestamp}_{uuid.uuid4().hex[:8]}"
+
+    def _get_run_dir(self, model_id, run_id):
+        safe_model_name = model_id.replace('/', '_')
+        return MODELS_DIR / safe_model_name / 'finetuned' / 'runs' / run_id
+
+    def _write_run_metadata(self, run_dir, payload):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        temp_path = run_dir / 'run.json.tmp'
+        final_path = run_dir / 'run.json'
+        with open(temp_path, 'w') as f:
+            json.dump(payload, f, indent=2)
+        temp_path.replace(final_path)
+
+    def _update_run_metadata(self, run_dir, updates):
+        run_path = run_dir / 'run.json'
+        payload = {}
+        if run_path.exists():
+            try:
+                with open(run_path, 'r') as f:
+                    payload = json.load(f)
+            except Exception:
+                payload = {}
+        payload.update(updates)
+        self._write_run_metadata(run_dir, payload)
+
+    def _append_metrics(self, run_dir, metrics):
+        run_dir.mkdir(parents=True, exist_ok=True)
+        metrics_path = run_dir / 'metrics.jsonl'
+        with open(metrics_path, 'a') as f:
+            f.write(json.dumps(metrics) + "\n")
+
+    def _load_metrics_history(self, run_dir):
+        metrics_path = run_dir / 'metrics.jsonl'
+        history = []
+        if not metrics_path.exists():
+            return history
+        with open(metrics_path, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    history.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+        return history
+
+    def _save_checkpoint(self, checkpoint_path, state):
+        checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = checkpoint_path.with_suffix('.tmp')
+        torch.save(state, temp_path)
+        temp_path.replace(checkpoint_path)
+
+    def _load_checkpoint(self, checkpoint_path):
+        if not checkpoint_path.exists():
+            return None
+        return torch.load(checkpoint_path, map_location=self.device)
+
+    def _update_queue_status_locked(self):
+        queued_runs = [
+            {
+                'run_id': job['run_id'],
+                'model_id': job['config'].get('model_id'),
+                'datasets': job['config'].get('datasets')
+            }
+            for job in self._queue
+        ]
+        self.training_status.update({
+            'queue_length': len(self._queue),
+            'queued_runs': queued_runs,
+            'active_run_id': self._active_run_id
+        })
+
+    def _enqueue_training(self, config):
+        params = config.get('params', {})
+        run_id = config.get('run_id') or params.get('resume_run_id') or params.get('resume_from_run_id')
+        if not run_id:
+            run_id = self._generate_run_id()
+        config['run_id'] = run_id
+
+        job = {
+            'run_id': run_id,
+            'config': config,
+            'queued_at': datetime.now().isoformat()
+        }
+        with self._queue_lock:
+            self._queue.append(job)
+            self._update_queue_status_locked()
+            queue_position = len(self._queue)
+
+        self.training_status.update({
+            'queue_position': queue_position,
+            'current_run_id': run_id
+        })
+        return run_id
+
+    def _start_queue_worker_if_needed(self):
+        with self._queue_lock:
+            if self._queue_thread and self._queue_thread.is_alive():
+                return
+            self._queue_thread = threading.Thread(target=self._process_queue, daemon=True)
+            self._queue_thread.start()
+
+    def _process_queue(self):
+        while True:
+            with self._queue_lock:
+                if not self._queue:
+                    self._update_queue_status_locked()
+                    return
+                job = self._queue.pop(0)
+                self._active_run_id = job['run_id']
+                self._update_queue_status_locked()
+                self.training_status['queue_position'] = None
+
+            self._run_training(job['config'])
+
+            with self._queue_lock:
+                self._active_run_id = None
+                self._update_queue_status_locked()
 
     def get_model_config(self, model_id, use_qlora=False):
         if LoraConfig is None or TaskType is None:
@@ -118,37 +251,9 @@ class Trainer:
 
     def start_training(self, config):
         try:
-            # Get epochs from params if provided, otherwise use default
-            num_epochs = config.get('params', {}).get('epochs', 3)
-            
-            self.training_status.update({
-                'is_training': True,
-                'is_cancelling': False,
-                'progress': 0,
-                'error': None,
-                'start_time': datetime.now().isoformat(),
-                'end_time': None,
-                'model_id': config['model_id'],
-                'dataset_info': config['datasets'],
-                'current_epoch': 1,  # Start at 1 instead of 0
-                'total_epochs': num_epochs,
-                'learning_rate': config.get('params', {}).get('learningRate', 0.0001),
-                'loss': None,
-                'train_loss': None,
-                'val_loss': None,
-                'final_val_loss': None,
-                'best_val_loss': None,
-                'current_metrics': None,
-                'current_step': None,
-                'total_steps': None,
-                'history': []
-            })
-
-            # Start training in a separate thread
-            self._cancel_event.clear()
-            thread = threading.Thread(target=self._run_training, args=(config,), daemon=True)
-            self._training_thread = thread
-            thread.start()
+            run_id = self._enqueue_training(config)
+            self._start_queue_worker_if_needed()
+            return run_id
 
         except Exception as e:
             self.training_status.update({
@@ -181,10 +286,13 @@ class Trainer:
 
     def _run_training(self, config):
         try:
+            self._cancel_event.clear()
             torch.set_grad_enabled(True)
             model_id = config['model_id']
             dataset_ids = config['datasets']
             params = config.get('params', {})
+            run_id = config.get('run_id') or self._generate_run_id()
+            config['run_id'] = run_id
             
             # Force single GPU if specified
             if params.get('force_single_gpu'):
@@ -205,6 +313,9 @@ class Trainer:
             training_method = params.get('training_method', 'standard')
             max_length = int(params.get('maxLength', MAX_LENGTH))
             grad_accum_steps = int(params.get('gradientAccumulationSteps', GRADIENT_ACCUMULATION_STEPS))
+            seed = params.get('seed')
+            if seed is None:
+                seed = random.randint(0, 2**32 - 1)
             
             logger.info(f"Training parameters:")
             logger.info(f"- Device: {self.device}")
@@ -215,6 +326,68 @@ class Trainer:
             logger.info(f"- Training method: {training_method}")
             logger.info(f"- Max length: {max_length}")
             logger.info(f"- Gradient accumulation steps: {grad_accum_steps}")
+            resume_from_run_id = params.get('resume_run_id') or params.get('resume_from_run_id')
+            resume_from_checkpoint_path = params.get('resume_checkpoint_path')
+            restart_from_run_id = params.get('restart_from_run_id')
+            restart_from_checkpoint_path = params.get('restart_from_checkpoint_path')
+            resume_enabled = bool(params.get('resume_from_checkpoint', True))
+
+            run_dir = self._get_run_dir(model_id, run_id)
+            checkpoint_path = run_dir / 'checkpoint.pt'
+
+            if resume_from_run_id and run_id != resume_from_run_id:
+                run_id = resume_from_run_id
+                config['run_id'] = run_id
+                run_dir = self._get_run_dir(model_id, run_id)
+                checkpoint_path = run_dir / 'checkpoint.pt'
+
+            history = []
+            if resume_enabled and (run_dir / 'metrics.jsonl').exists():
+                history = self._load_metrics_history(run_dir)
+
+            run_metadata = {
+                'run_id': run_id,
+                'model_id': model_id,
+                'datasets': dataset_ids,
+                'params': params,
+                'seed': seed,
+                'created_at': datetime.now().isoformat(),
+                'resume_from_run_id': resume_from_run_id,
+                'resume_from_checkpoint_path': resume_from_checkpoint_path,
+                'restart_from_run_id': restart_from_run_id,
+                'restart_from_checkpoint_path': restart_from_checkpoint_path
+            }
+            self._update_run_metadata(run_dir, run_metadata)
+
+            self.training_status.update({
+                'is_training': True,
+                'is_cancelling': False,
+                'progress': 0,
+                'error': None,
+                'start_time': datetime.now().isoformat(),
+                'end_time': None,
+                'model_id': model_id,
+                'dataset_info': dataset_ids,
+                'current_epoch': 1,
+                'total_epochs': num_epochs,
+                'learning_rate': learning_rate,
+                'loss': None,
+                'train_loss': None,
+                'val_loss': None,
+                'final_val_loss': None,
+                'best_val_loss': None,
+                'current_metrics': None,
+                'current_step': None,
+                'total_steps': None,
+                'history': history,
+                'current_run_id': run_id,
+                'active_run_id': run_id
+            })
+
+            random.seed(seed)
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
             
             # First load model and tokenizer
             safe_model_name = model_id.replace('/', '_')
@@ -377,22 +550,75 @@ class Trainer:
                 num_warmup_steps=0,
                 num_training_steps=total_steps
             )
-            
-            # Initialize history at the start
-            self.training_status['history'] = []
-            
+
+            start_epoch = 0
+            best_val_loss = float('inf')
+            checkpoint_source_path = None
+
+            if restart_from_checkpoint_path:
+                checkpoint_source_path = Path(restart_from_checkpoint_path)
+            elif restart_from_run_id:
+                checkpoint_source_path = self._get_run_dir(model_id, restart_from_run_id) / 'checkpoint.pt'
+            elif resume_enabled:
+                if resume_from_checkpoint_path:
+                    checkpoint_source_path = Path(resume_from_checkpoint_path)
+                else:
+                    checkpoint_source_path = checkpoint_path
+
+            if checkpoint_source_path:
+                checkpoint = self._load_checkpoint(checkpoint_source_path)
+                if checkpoint:
+                    model_state = checkpoint.get('model_state') or checkpoint.get('model_state_dict')
+                    if model_state:
+                        model.load_state_dict(model_state)
+                    else:
+                        logger.warning("Checkpoint missing model state; continuing without loading weights")
+                    optimizer_state = checkpoint.get('optimizer_state')
+                    if optimizer_state:
+                        optimizer.load_state_dict(optimizer_state)
+                    scheduler_state = checkpoint.get('scheduler_state')
+                    if scheduler_state:
+                        scheduler.load_state_dict(scheduler_state)
+                    start_epoch = int(checkpoint.get('epoch', 0))
+                    current_step = int(checkpoint.get('global_step', 0))
+                    best_val_loss = checkpoint.get('best_val_loss', best_val_loss)
+
+                    rng_state = checkpoint.get('rng_state')
+                    if rng_state is not None:
+                        torch.set_rng_state(rng_state)
+                    cuda_rng_state = checkpoint.get('cuda_rng_state')
+                    if cuda_rng_state is not None and torch.cuda.is_available():
+                        torch.cuda.set_rng_state_all(cuda_rng_state)
+
+                    logger.info(f"Resuming from checkpoint: {checkpoint_source_path}")
+                else:
+                    logger.info(f"No checkpoint found at: {checkpoint_source_path}")
+
+            if history:
+                self.training_status['history'] = history
+            if start_epoch > 0:
+                self.training_status.update({
+                    'current_epoch': start_epoch + 1,
+                    'best_val_loss': best_val_loss
+                })
+
             # Training loop
             model.train()
-            best_val_loss = float('inf')
             output_dir = model_path / 'finetuned'
             output_dir.mkdir(exist_ok=True, parents=True)
             
             logger.info(f"Will save model to: {output_dir}")
+            logger.info(f"Run artefacts directory: {run_dir}")
             logger.info(f"Using device: {self.device}")
             
-            for epoch in range(num_epochs):
+            for epoch in range(start_epoch, num_epochs):
                 if self._cancel_event.is_set():
                     logger.info("Training cancelled")
+                    self._update_run_metadata(run_dir, {
+                        'status': 'cancelled',
+                        'end_time': datetime.now().isoformat(),
+                        'error': 'Training cancelled by user'
+                    })
                     self.training_status.update({
                         'is_training': False,
                         'is_cancelling': False,
@@ -416,6 +642,11 @@ class Trainer:
                 for step, batch in enumerate(train_dataloader):
                     if self._cancel_event.is_set():
                         logger.info("Training cancelled")
+                        self._update_run_metadata(run_dir, {
+                            'status': 'cancelled',
+                            'end_time': datetime.now().isoformat(),
+                            'error': 'Training cancelled by user'
+                        })
                         self.training_status.update({
                             'is_training': False,
                             'is_cancelling': False,
@@ -485,6 +716,11 @@ class Trainer:
                     for batch in val_dataloader:
                         if self._cancel_event.is_set():
                             logger.info("Training cancelled")
+                            self._update_run_metadata(run_dir, {
+                                'status': 'cancelled',
+                                'end_time': datetime.now().isoformat(),
+                                'error': 'Training cancelled by user'
+                            })
                             self.training_status.update({
                                 'is_training': False,
                                 'is_cancelling': False,
@@ -516,9 +752,11 @@ class Trainer:
                     'epoch': epoch + 1,  # Use 1-based epoch numbering
                     'train_loss': epoch_train_loss,
                     'val_loss': val_loss,
+                    'run_id': run_id,
                     'timestamp': datetime.now().isoformat()
                 }
                 self.training_status['history'].append(epoch_metrics)
+                self._append_metrics(run_dir, epoch_metrics)
                 
                 # Update status with epoch completion
                 self.training_status.update({
@@ -547,6 +785,7 @@ class Trainer:
                         
                         # Save training configuration
                         training_config = {
+                            'run_id': run_id,
                             'model_id': model_id,
                             'training_method': training_method,
                             'best_val_loss': best_val_loss,
@@ -555,14 +794,27 @@ class Trainer:
                             'save_time': datetime.now().isoformat()
                         }
                         
-                        with open(output_dir / 'training_config.json', 'w') as f:
+                        with open(run_dir / 'training_config.json', 'w') as f:
                             json.dump(training_config, f, indent=2)
                             
-                        logger.info(f"Saved training configuration to {output_dir / 'training_config.json'}")
+                        logger.info(f"Saved training configuration to {run_dir / 'training_config.json'}")
                         
                     except Exception as save_error:
                         logger.error(f"Error saving model: {str(save_error)}")
                         raise
+
+                checkpoint_state = {
+                    'epoch': epoch + 1,
+                    'global_step': current_step,
+                    'model_state': model.state_dict(),
+                    'optimizer_state': optimizer.state_dict(),
+                    'scheduler_state': scheduler.state_dict(),
+                    'best_val_loss': best_val_loss,
+                    'seed': seed,
+                    'rng_state': torch.get_rng_state(),
+                    'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+                }
+                self._save_checkpoint(checkpoint_path, checkpoint_state)
             
             # Save final model state if it's the best one
             if val_loss <= best_val_loss:
@@ -582,11 +834,27 @@ class Trainer:
                 'final_val_loss': val_loss,
                 'best_val_loss': best_val_loss
             })
+
+            self._update_run_metadata(run_dir, {
+                'status': 'completed',
+                'end_time': datetime.now().isoformat(),
+                'final_val_loss': val_loss,
+                'best_val_loss': best_val_loss
+            })
             
             logger.info(f"Training completed. Model saved at: {output_dir}")
             
         except Exception as e:
             logger.error(f"Training error: {str(e)}")
+            try:
+                if 'run_dir' in locals():
+                    self._update_run_metadata(run_dir, {
+                        'status': 'failed',
+                        'end_time': datetime.now().isoformat(),
+                        'error': str(e)
+                    })
+            except Exception:
+                pass
             self.training_status.update({
                 'is_training': False,
                 'is_cancelling': False,

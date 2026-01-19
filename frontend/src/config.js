@@ -10,7 +10,8 @@ const apiConfig = {
       cancelTraining: '/models/cancel-training',
       chatCompletions: '/models/v1/chat/completions',
       add: '/models/add',
-      delete: '/models/delete'
+      delete: '/models/delete',
+      deleteDownloaded: '/models/downloaded'
     },
     datasets: {
       prepare: '/datasets/prepare',

@@ -11,6 +11,7 @@ import torch
 import json
 from datetime import datetime
 from pathlib import Path
+import shutil
 from huggingface_hub import model_info
 import requests
 try:
@@ -809,6 +810,44 @@ def add_model():
         
     except Exception as e:
         logger.error(f"Error adding model: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+@bp.route('/downloaded/<path:model_id>', methods=['DELETE'])
+def delete_downloaded_model(model_id):
+    try:
+        safe_dir_name = model_id.replace('/', '_')
+        model_path = (MODELS_DIR / safe_dir_name).resolve()
+        base_dir = MODELS_DIR.resolve()
+        if base_dir not in model_path.parents and model_path != base_dir:
+            return jsonify({
+                "status": "error",
+                "message": "Invalid model path"
+            }), 400
+
+        if not model_path.exists():
+            return jsonify({
+                "status": "error",
+                "message": "Downloaded model not found"
+            }), 404
+
+        if not model_path.is_dir():
+            return jsonify({
+                "status": "error",
+                "message": "Downloaded model path is not a directory"
+            }), 400
+
+        shutil.rmtree(model_path)
+        sgl_runtime_cache.pop(str(model_path), None)
+        logger.info(f"Deleted downloaded model files at {model_path}")
+        return jsonify({
+            "status": "success",
+            "message": "Downloaded model files deleted"
+        })
+    except Exception as e:
+        logger.error(f"Error deleting downloaded model files: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)

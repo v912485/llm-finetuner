@@ -44,11 +44,12 @@ Performance Optimization:
 - Implement gradient accumulation for large batch sizes.
 
 Key Conventions:
-1. Begin projects with clear problem definition and dataset analysis.
-2. Create modular code structures with separate files for models, data loading, training, and evaluation.
-3. Use configuration files (e.g., YAML) for hyperparameters and model settings.
-4. Implement proper experiment tracking and model checkpointing.
-5. Use version control (e.g., git) for tracking changes in code and configurations.
-6. THe python environment is under backen/.venv
+1. Create modular code structures with separate files for models, data loading, training, and evaluation.
+2. Use configuration files (e.g., YAML) for hyperparameters and model settings.
+3. Implement proper experiment tracking and model checkpointing.
+4. Use version control (e.g., git) for tracking changes in code and configurations.
+5. The python environment is under backen/.venv
+6. Write unit tests for new functionality where appropriate.
+7. Run all unit tests after completing an implementation.
 
 Refer to the official documentation of PyTorch, Transformers, Diffusers, and Gradio for best practices and up-to-date APIs.
