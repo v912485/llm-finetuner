@@ -4,16 +4,31 @@ import Chart from 'chart.js/auto';
 const TrainingGraph = ({ history }) => {
   const chartRef = useRef(null);
   const chartInstance = useRef(null);
+  const savedScrollRef = useRef(window.scrollY);
 
   useEffect(() => {
-    if (!history || history.length === 0) return;
+    savedScrollRef.current = window.scrollY;
 
-    const ctx = chartRef.current.getContext('2d');
-
-    // Destroy previous chart if it exists
-    if (chartInstance.current) {
-      chartInstance.current.destroy();
+    if (!history || history.length === 0) {
+      if (chartInstance.current) {
+        chartInstance.current.destroy();
+        chartInstance.current = null;
+      }
+      return;
     }
+
+    const savedScrollY = savedScrollRef.current;
+    const canvas = chartRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const restoreScroll = () => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          window.scrollTo({ top: savedScrollY, behavior: 'instant' });
+        });
+      });
+    };
 
     const metricSeries = [
       { key: 'accuracy', label: 'Accuracy', color: 'rgb(54, 162, 235)' },
@@ -34,31 +49,42 @@ const TrainingGraph = ({ history }) => {
         yAxisID: 'y2',
       }));
 
-    // Create new chart
+    const labels = history.map(h => h.epoch);
+    const datasets = [
+      {
+        label: 'Training Loss',
+        data: history.map(h => h.train_loss),
+        borderColor: 'rgb(75, 192, 192)',
+        tension: 0.1,
+        yAxisID: 'y',
+      },
+      {
+        label: 'Validation Loss',
+        data: history.map(h => h.val_loss),
+        borderColor: 'rgb(255, 99, 132)',
+        tension: 0.1,
+        yAxisID: 'y',
+      },
+      ...metricDatasets
+    ];
+
+    if (chartInstance.current) {
+      chartInstance.current.data.labels = labels;
+      chartInstance.current.data.datasets = datasets;
+      chartInstance.current.options.scales.y2.display = metricDatasets.length > 0;
+      chartInstance.current.update('none');
+      restoreScroll();
+      return;
+    }
     chartInstance.current = new Chart(ctx, {
       type: 'line',
       data: {
-        labels: history.map(h => h.epoch),
-        datasets: [
-          {
-            label: 'Training Loss',
-            data: history.map(h => h.train_loss),
-            borderColor: 'rgb(75, 192, 192)',
-            tension: 0.1,
-            yAxisID: 'y',
-          },
-          {
-            label: 'Validation Loss',
-            data: history.map(h => h.val_loss),
-            borderColor: 'rgb(255, 99, 132)',
-            tension: 0.1,
-            yAxisID: 'y',
-          },
-          ...metricDatasets
-        ]
+        labels,
+        datasets
       },
       options: {
         responsive: true,
+        maintainAspectRatio: true,
         plugins: {
           title: {
             display: true,
@@ -101,9 +127,12 @@ const TrainingGraph = ({ history }) => {
       }
     });
 
+    restoreScroll();
+
     return () => {
       if (chartInstance.current) {
         chartInstance.current.destroy();
+        chartInstance.current = null;
       }
     };
   }, [history]);

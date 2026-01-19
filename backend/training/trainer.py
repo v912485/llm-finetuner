@@ -76,6 +76,25 @@ class Trainer:
         return self.training_status['is_training']
 
     def get_status(self):
+        # Update dynamic device info (like free memory) if possible
+        if torch.cuda.is_available():
+            try:
+                for i in range(torch.cuda.device_count()):
+                    free_mem, total_mem = torch.cuda.mem_get_info(i)
+                    if 'devices' in self.training_status['device_info'] and i < len(self.training_status['device_info']['devices']):
+                        self.training_status['device_info']['devices'][i]['memory_free'] = free_mem
+                    if i == 0:
+                        self.training_status['device_info']['memory_free'] = free_mem
+            except Exception:
+                pass
+        else:
+            # Update CPU memory info
+            try:
+                import psutil
+                vm = psutil.virtual_memory()
+                self.training_status['device_info']['memory_free'] = vm.available
+            except Exception:
+                pass
         return self.training_status
 
     def _generate_run_id(self):

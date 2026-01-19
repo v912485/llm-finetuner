@@ -105,7 +105,26 @@ function App() {
       });
       const data = await response.json();
       if (data.status === 'success') {
-        setTrainingStatus(data);
+        setTrainingStatus(prevStatus => {
+          if (!prevStatus || !Array.isArray(prevStatus.history) || !Array.isArray(data.history)) {
+            return data;
+          }
+          const prevHistory = prevStatus.history;
+          const nextHistory = data.history;
+          if (prevHistory.length === nextHistory.length) {
+            if (prevHistory.length === 0) {
+              return { ...data, history: prevHistory };
+            }
+            const prevLast = prevHistory[prevHistory.length - 1];
+            const nextLast = nextHistory[nextHistory.length - 1];
+            if (prevLast?.epoch === nextLast?.epoch &&
+                prevLast?.train_loss === nextLast?.train_loss &&
+                prevLast?.val_loss === nextLast?.val_loss) {
+              return { ...data, history: prevHistory };
+            }
+          }
+          return data;
+        });
         setIsTraining(Boolean(data.is_training));
       }
     } catch (error) {
@@ -1197,70 +1216,118 @@ function App() {
               </section>
 
               <section className="training-control">
-                <h2>4. Training Control</h2>
-                {!isTraining ? (
-                  <button
-                    className="start-training-button"
-                    onClick={startTraining}
-                    disabled={!selectedModel || selectedFiles.length === 0 || !areSelectedFilesConfigured()}
-                  >
-                    {!selectedModel ? 'Select a Model First' :
-                     selectedFiles.length === 0 ? 'Select Dataset(s)' :
-                     !areSelectedFilesConfigured() ? 'Configure Selected Dataset(s)' :
-                     'Start Training'}
-                  </button>
-                ) : (
-                  <button
-                    className="cancel-training-button"
-                    onClick={cancelTraining}
-                  >
-                    Cancel Training
-                  </button>
-                )}
+                <div className="section-header">
+                  <h2>4. Training Control</h2>
+                  {trainingStatus?.is_training && (
+                    <div className="live-indicator">
+                      <span className="live-dot"></span>
+                      LIVE
+                    </div>
+                  )}
+                </div>
 
-                {trainingStatus && (
-                  <div className="training-status">
-                    <h3>Training Status</h3>
-                    <div className="status-details">
-                      <div className="status-item device-info">
-                        <span>Device:</span>
-                        <span>
-                          {trainingStatus.device_info?.name} ({trainingStatus.device_info?.type.toUpperCase()})
-                          {trainingStatus.device_info?.memory && 
-                            <span className="device-memory"> - {trainingStatus.device_info.memory}</span>
-                          }
-                        </span>
-                      </div>
-                      
-                      <div className="status-item">
-                        <span>Progress:</span>
-                        <div className="progress-bar-container">
-                          <div 
-                            className="progress-bar" 
-                            style={{ width: `${trainingStatus.progress}%` }}
-                          />
-                          <span>{trainingStatus.progress}%</span>
+                <div className="control-actions">
+                  {!isTraining ? (
+                    <button
+                      className="start-training-button"
+                      onClick={startTraining}
+                      disabled={!selectedModel || selectedFiles.length === 0 || !areSelectedFilesConfigured()}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="button-icon">
+                        <polygon points="5 3 19 12 5 21 5 3"></polygon>
+                      </svg>
+                      {!selectedModel ? 'Select a Model First' :
+                       selectedFiles.length === 0 ? 'Select Dataset(s)' :
+                       !areSelectedFilesConfigured() ? 'Configure Selected Dataset(s)' :
+                       'Start Training'}
+                    </button>
+                  ) : (
+                    <button
+                      className="cancel-training-button"
+                      onClick={cancelTraining}
+                    >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="button-icon">
+                        <rect x="4" y="4" width="16" height="16" rx="2" ry="2"></rect>
+                      </svg>
+                      Cancel Training
+                    </button>
+                  )}
+                </div>
+
+                {trainingStatus?.device_info && (
+                  <div className={`training-status-card ${trainingStatus.is_training ? 'is-active' : ''}`}>
+                    <div className="status-card-header">
+                      <h3>{trainingStatus.is_training ? 'Training Status' : 'System Status'}</h3>
+                      <div className="status-header-badges">
+                        <div className="device-badge">
+                          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect>
+                            <rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect>
+                            <line x1="6" y1="6" x2="6.01" y2="6"></line>
+                            <line x1="6" y1="18" x2="6.01" y2="18"></line>
+                          </svg>
+                          <span className="device-name">{trainingStatus.device_info.name}</span>
+                          <span className="backend-tag">{trainingStatus.device_info.backend}</span>
+                          {trainingStatus.device_info.memory_free !== undefined && trainingStatus.device_info.memory_total !== undefined && (
+                            <span className="vram-mini-usage">
+                              {((trainingStatus.device_info.memory_total - trainingStatus.device_info.memory_free) / (1024**3)).toFixed(1)} / {trainingStatus.device_info.memory}
+                            </span>
+                          )}
                         </div>
                       </div>
-                      <div className="status-item">
-                        <span>Epoch:</span>
-                        <span>{trainingStatus.current_epoch} / {trainingStatus.total_epochs}</span>
-                      </div>
-                      {trainingStatus.loss && (
-                        <div className="status-item">
-                          <span>Loss:</span>
-                          <span>{trainingStatus.loss.toFixed(4)}</span>
+                    </div>
+                    
+                    <div className="status-grid">
+                      {(trainingStatus.is_training || (trainingStatus.progress > 0 && trainingStatus.progress < 100)) ? (
+                        <div className="status-metric-item">
+                          <span className="metric-label">Progress</span>
+                          <div className="progress-display">
+                            <div className="progress-bar-container">
+                              <div 
+                                className="progress-bar" 
+                                style={{ width: `${trainingStatus.progress}%` }}
+                              >
+                                <div className="progress-glow"></div>
+                              </div>
+                            </div>
+                            <span className="progress-percentage">{trainingStatus.progress}%</span>
+                          </div>
                         </div>
-                      )}
+                      ) : !trainingStatus.is_training && trainingStatus.progress === 0 ? (
+                        <div className="status-ready-indicator">
+                          <div className="ready-dot"></div>
+                          <span>System Ready - Waiting for training to start</span>
+                        </div>
+                      ) : null}
+
+                      <div className="metrics-row">
+                        <div className="status-metric-mini">
+                          <span className="metric-label">Epoch</span>
+                          <span className="metric-value">{trainingStatus.current_epoch} / {trainingStatus.total_epochs}</span>
+                        </div>
+                        {trainingStatus.loss && (
+                          <div className="status-metric-mini">
+                            <span className="metric-label">Current Loss</span>
+                            <span className="metric-value">{trainingStatus.loss.toFixed(4)}</span>
+                          </div>
+                        )}
+                      </div>
+
                       {trainingStatus.error && dismissedTrainingError !== trainingStatus.error && (
-                        <div className="status-error" role="alert">
-                          <span>Error: {trainingStatus.error}</span>
+                        <div className="status-error-v2" role="alert">
+                          <div className="error-content">
+                            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                              <circle cx="12" cy="12" r="10"></circle>
+                              <line x1="12" y1="8" x2="12" y2="12"></line>
+                              <line x1="12" y1="16" x2="12.01" y2="16"></line>
+                            </svg>
+                            <span>{trainingStatus.error}</span>
+                          </div>
                           <button
                             type="button"
                             className="status-error-dismiss"
                             onClick={() => setDismissedTrainingError(trainingStatus.error)}
                             aria-label="Dismiss training error"
-                            title="Dismiss"
                           >
                             ×
                           </button>
@@ -1269,8 +1336,13 @@ function App() {
                     </div>
 
                     {trainingStatus.history && trainingStatus.history.length > 0 && (
-                      <div className="training-graph-container">
-                        <h4>Training Progress</h4>
+                      <div className="training-graph-section">
+                        <div className="graph-header">
+                          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+                          </svg>
+                          <h4>Learning Curves</h4>
+                        </div>
                         <TrainingGraph 
                           history={trainingStatus.history}
                           currentEpoch={trainingStatus.current_epoch}
@@ -1285,7 +1357,7 @@ function App() {
                   !trainingStatus.is_training &&
                   !trainingStatus.error &&
                   (Number(trainingStatus.progress) >= 100 || Boolean(trainingStatus.end_time)) && (
-                  <div className="save-model-section">
+                  <div className="save-model-container">
                     <button 
                       className="save-model-button"
                       onClick={() => {
@@ -1294,23 +1366,35 @@ function App() {
                         setShowSaveDialog(true);
                       }}
                     >
+                      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="button-icon">
+                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"></path>
+                        <polyline points="17 21 17 13 7 13 7 21"></polyline>
+                        <polyline points="7 3 7 8 15 8"></polyline>
+                      </svg>
                       Save Trained Model
                     </button>
                     
                     {showSaveDialog && (
-                      <div className="save-dialog">
-                        <input
-                          type="text"
-                          value={saveName}
-                          onChange={(e) => setSaveName(e.target.value)}
-                          placeholder="Enter name for saved model"
-                        />
-                        <div className="save-dialog-buttons">
-                          <button onClick={handleSaveModel}>Save</button>
-                          <button onClick={() => {
-                            setShowSaveDialog(false);
-                            setSaveName('');
-                          }}>Cancel</button>
+                      <div className="save-dialog-overlay">
+                        <div className="save-dialog-box">
+                          <h4>Save Finetuned Model</h4>
+                          <p>Enter a name for your saved model weights.</p>
+                          <input
+                            type="text"
+                            value={saveName}
+                            onChange={(e) => setSaveName(e.target.value)}
+                            placeholder="e.g. gemma-7b-custom-v1"
+                            autoFocus
+                          />
+                          <div className="save-dialog-actions">
+                            <button className="cancel-btn" onClick={() => {
+                              setShowSaveDialog(false);
+                              setSaveName('');
+                            }}>Cancel</button>
+                            <button className="confirm-btn" onClick={handleSaveModel} disabled={!saveName.trim()}>
+                              Save Weights
+                            </button>
+                          </div>
                         </div>
                       </div>
                     )}

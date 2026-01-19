@@ -1,6 +1,7 @@
 .model-selector {
   display: grid;
   gap: 8px;
+  margin-bottom: 12px;
 }
 
 .model-selector-header {
@@ -10,33 +11,72 @@
 }
 
 .model-selector-header label {
-  font-weight: 500;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #555;
 }
 
 .refresh-button {
   border: 1px solid #ced4da;
   background: white;
   border-radius: 4px;
-  padding: 2px 6px;
+  padding: 4px 8px;
   cursor: pointer;
   font-size: 14px;
   line-height: 1;
+  transition: all 0.2s;
+  color: #666;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.refresh-button:hover:not(:disabled) {
+  background: #f8f9fa;
+  border-color: #adb5bd;
+  color: #333;
 }
 
 .refresh-button.refreshing {
   cursor: wait;
-  color: #6c757d;
+  color: #007bff;
+  animation: spin 1s infinite linear;
+}
+
+@keyframes spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
 }
 
 .refresh-button:disabled {
-  opacity: 0.7;
+  opacity: 0.5;
   cursor: not-allowed;
 }
 
 .model-select {
-  padding: 8px 10px;
-  border: 1px solid #ced4da;
-  border-radius: 4px;
-  font-size: 14px;
+  padding: 10px 12px;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  font-size: 0.95rem;
   background: white;
+  transition: border-color 0.2s, box-shadow 0.2s;
+  width: 100%;
+  color: #374151;
+}
+
+.model-select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 3px rgba(0, 123, 255, 0.1);
+}
+
+.model-select optgroup {
+  font-weight: 700;
+  color: #4b5563;
+  padding: 10px 0;
+}
+
+.model-select option {
+  padding: 8px;
+  color: #1f2937;
 }

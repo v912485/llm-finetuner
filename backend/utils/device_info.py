@@ -8,28 +8,34 @@ logger = logging.getLogger('training')
 
 def get_device_info():
     """Get detailed information about the available hardware"""
+    vm = psutil.virtual_memory()
     device_info = {
         'type': 'cpu',
         'name': 'CPU',
         'backend': 'CPU',
-        'memory': 'N/A',
+        'memory': f"{vm.total / (1024**3):.1f}GB",
+        'memory_total': vm.total,
+        'memory_free': vm.available,
         'system': {
             'os': platform.system(),
             'python_version': platform.python_version(),
             'torch_version': torch.__version__,
             'cpu_count': os.cpu_count(),
-            'total_memory': f"{psutil.virtual_memory().total / (1024**3):.1f}GB"
+            'total_memory': f"{vm.total / (1024**3):.1f}GB"
         }
     }
     
     try:
         if hasattr(torch.version, 'hip') and torch.version.hip is not None:
             # AMD GPU with ROCm
+            gpu_props = torch.cuda.get_device_properties(0)
             device_info.update({
                 'type': 'cuda',
                 'name': 'AMD GPU',
                 'backend': 'ROCm',
-                'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB",
+                'memory': f"{gpu_props.total_memory / (1024**3):.1f}GB",
+                'memory_total': gpu_props.total_memory,
+                'memory_free': torch.cuda.mem_get_info(0)[0] if torch.cuda.is_available() else 0,
                 'device_count': torch.cuda.device_count(),
                 'rocm_version': torch.version.hip
             })
@@ -39,20 +45,27 @@ def get_device_info():
                 device_info['devices'] = []
                 for i in range(torch.cuda.device_count()):
                     props = torch.cuda.get_device_properties(i)
+                    free_mem, total_mem = torch.cuda.mem_get_info(i)
                     device_info['devices'].append({
                         'index': i,
                         'name': props.name,
                         'memory': f"{props.total_memory / (1024**3):.1f}GB",
+                        'memory_total': props.total_memory,
+                        'memory_free': free_mem,
                         'compute_capability': f"{props.major}.{props.minor}"
                     })
                     
         elif torch.cuda.is_available():
             # NVIDIA GPU with CUDA
+            gpu_props = torch.cuda.get_device_properties(0)
+            free_mem, total_mem = torch.cuda.mem_get_info(0)
             device_info.update({
                 'type': 'cuda',
                 'name': torch.cuda.get_device_name(0),
                 'backend': 'CUDA',
-                'memory': f"{torch.cuda.get_device_properties(0).total_memory / (1024**3):.1f}GB",
+                'memory': f"{gpu_props.total_memory / (1024**3):.1f}GB",
+                'memory_total': gpu_props.total_memory,
+                'memory_free': free_mem,
                 'device_count': torch.cuda.device_count(),
                 'cuda_version': torch.version.cuda
             })
@@ -62,10 +75,13 @@ def get_device_info():
                 device_info['devices'] = []
                 for i in range(torch.cuda.device_count()):
                     props = torch.cuda.get_device_properties(i)
+                    f_mem, t_mem = torch.cuda.mem_get_info(i)
                     device_info['devices'].append({
                         'index': i,
                         'name': props.name,
                         'memory': f"{props.total_memory / (1024**3):.1f}GB",
+                        'memory_total': props.total_memory,
+                        'memory_free': f_mem,
                         'compute_capability': f"{props.major}.{props.minor}"
                     })
     except Exception as e:

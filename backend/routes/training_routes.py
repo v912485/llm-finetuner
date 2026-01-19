@@ -45,9 +45,10 @@ def start_training():
 @bp.route('/status', methods=['GET'])
 def get_training_status():
     try:
+        status = trainer.get_status()
         return jsonify({
             'status': 'success',
-            **trainer.get_status()
+            **status
         })
     except Exception as e:
         logger.error(f"Error getting training status: {str(e)}")
