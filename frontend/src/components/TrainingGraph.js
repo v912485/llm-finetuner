@@ -20,7 +20,7 @@ const TrainingGraph = ({ history }) => {
       { key: 'bleu', label: 'BLEU', color: 'rgb(153, 102, 255)' },
       { key: 'rouge1', label: 'ROUGE-1', color: 'rgb(255, 159, 64)' },
       { key: 'rouge2', label: 'ROUGE-2', color: 'rgb(201, 203, 207)' },
-      { key: 'rougeL', label: 'ROUGE-L', color: 'rgb(75, 192, 192)' },
+      { key: 'rougeL', label: 'ROUGE-L', color: 'rgb(106, 168, 79)' },
     ];
 
     const metricDatasets = metricSeries
@@ -44,13 +44,15 @@ const TrainingGraph = ({ history }) => {
             label: 'Training Loss',
             data: history.map(h => h.train_loss),
             borderColor: 'rgb(75, 192, 192)',
-            tension: 0.1
+            tension: 0.1,
+            yAxisID: 'y',
           },
           {
             label: 'Validation Loss',
             data: history.map(h => h.val_loss),
             borderColor: 'rgb(255, 99, 132)',
-            tension: 0.1
+            tension: 0.1,
+            yAxisID: 'y',
           },
           ...metricDatasets
         ]

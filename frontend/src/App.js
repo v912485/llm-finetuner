@@ -542,24 +542,22 @@ function App() {
   };
 
   // Add this useEffect to debug selectedModel changes
-  useEffect(() => {
-    console.log('Selected model changed:', selectedModel);
-  }, [selectedModel]);
+  const getSelectedModelConfig = useCallback(() => {
+    return availableModels.find(model => model.id === selectedModel);
+  }, [availableModels, selectedModel]);
 
   useEffect(() => {
-    const getSelectedModelConfig = () => {
-      return availableModels.find(model => model.id === selectedModel);
-    };
-    
+    console.log('Selected model changed:', selectedModel);
+    console.log('Available models:', availableModels);
+    console.log('Selected model config:', getSelectedModelConfig());
+  }, [selectedModel, availableModels, getSelectedModelConfig]);
+
+  useEffect(() => {
     const selectedModelConfig = getSelectedModelConfig();
     if (!selectedModelConfig?.supports_lora && trainingMethod !== 'standard') {
       setTrainingMethod('standard');
     }
-  }, [selectedModel, trainingMethod, availableModels]);
-
-  const getSelectedModelConfig = () => {
-    return availableModels.find(model => model.id === selectedModel);
-  };
+  }, [selectedModel, trainingMethod, availableModels, getSelectedModelConfig]);
 
   const handleSaveModel = async () => {
     if (!saveName.trim()) {
@@ -1059,113 +1057,142 @@ function App() {
 
               <section className="training-params">
                 <h2>3. Configure Training Parameters</h2>
-                <div className="params-form">
-                  <div className="param-group">
-                    <label>Training Method:</label>
-                    <select
-                      value={trainingMethod}
-                      onChange={(e) => setTrainingMethod(e.target.value)}
-                    >
-                      <option value="standard">Full Fine-tuning</option>
-                      {selectedModel && getSelectedModelConfig()?.supports_lora && (
-                        <>
-                          <option value="lora">LoRA (Memory Efficient)</option>
-                          <option value="qlora">QLoRA (Very Memory Efficient)</option>
-                        </>
-                      )}
-                    </select>
-                    <span className="param-help">
-                      {config?.training_methods?.[trainingMethod]?.description || ''}
-                    </span>
-                  </div>
-                  <div className="param-group">
-                    <label>Learning Rate:</label>
-                    <input
-                      type="number"
-                      value={finetuningParams.learningRate}
-                      onChange={(e) =>
-                        setFinetuningParams({
-                          ...finetuningParams,
-                          learningRate: parseFloat(e.target.value),
-                        })
-                      }
-                      step="0.0001"
-                    />
-                  </div>
-                  <div className="param-group">
-                    <label>Batch Size:</label>
-                    <input
-                      type="number"
-                      value={finetuningParams.batchSize}
-                      onChange={(e) =>
-                        setFinetuningParams({
-                          ...finetuningParams,
-                          batchSize: parseInt(e.target.value),
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="param-group">
-                    <label>Epochs:</label>
-                    <input
-                      type="number"
-                      value={finetuningParams.epochs}
-                      onChange={(e) =>
-                        setFinetuningParams({
-                          ...finetuningParams,
-                          epochs: parseInt(e.target.value),
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="param-group">
-                    <label>Validation Split:</label>
-                    <input
-                      type="number"
-                      value={finetuningParams.validationSplit}
-                      onChange={(e) =>
-                        setFinetuningParams({
-                          ...finetuningParams,
-                          validationSplit: parseFloat(e.target.value),
-                        })
-                      }
-                      step="0.05"
-                      min="0.1"
-                      max="0.5"
-                    />
-                    <span className="param-help">
-                      Portion of data used for validation (10-50%)
-                    </span>
-                  </div>
-                  <div className="param-group">
-                    <label>Enable Checkpointing:</label>
-                    <input
-                      type="checkbox"
-                      checked={finetuningParams.checkpointEnabled}
-                      onChange={(e) =>
-                        setFinetuningParams({
-                          ...finetuningParams,
-                          checkpointEnabled: e.target.checked
-                        })
-                      }
-                    />
-                  </div>
-                  {finetuningParams.checkpointEnabled && (
-                    <div className="param-group">
-                      <label>Checkpoint Interval (epochs):</label>
-                      <input
-                        type="number"
-                        value={finetuningParams.checkpointInterval}
-                        onChange={(e) =>
-                          setFinetuningParams({
-                            ...finetuningParams,
-                            checkpointInterval: Math.max(1, parseInt(e.target.value, 10) || 1)
-                          })
-                        }
-                        min="1"
-                      />
+                <div className="params-form-container">
+                  <div className="params-column">
+                    <div className="params-group-card">
+                      <h3>Core Training</h3>
+                      <div className="param-item">
+                        <label>Training Method</label>
+                        <select
+                          value={trainingMethod}
+                          onChange={(e) => setTrainingMethod(e.target.value)}
+                        >
+                          <option value="standard">Full Fine-tuning</option>
+                          {(() => {
+                            const modelConfig = getSelectedModelConfig();
+                            return selectedModel && modelConfig?.supports_lora && (
+                              <>
+                                <option value="lora">LoRA (Memory Efficient)</option>
+                                <option value="qlora">QLoRA (Very Memory Efficient)</option>
+                              </>
+                            );
+                          })()}
+                        </select>
+                        <p className="param-description">
+                          {config?.training_methods?.[trainingMethod]?.description || 'Select how the model should be trained.'}
+                        </p>
+                      </div>
+
+                      <div className="params-row">
+                        <div className="param-item">
+                          <label>Learning Rate</label>
+                          <div className="input-with-hint">
+                            <input
+                              type="number"
+                              value={finetuningParams.learningRate}
+                              onChange={(e) =>
+                                setFinetuningParams({
+                                  ...finetuningParams,
+                                  learningRate: parseFloat(e.target.value),
+                                })
+                              }
+                              step="0.0001"
+                            />
+                          </div>
+                        </div>
+                        <div className="param-item">
+                          <label>Batch Size</label>
+                          <input
+                            type="number"
+                            value={finetuningParams.batchSize}
+                            onChange={(e) =>
+                              setFinetuningParams({
+                                ...finetuningParams,
+                                batchSize: parseInt(e.target.value, 10),
+                              })
+                            }
+                            min="1"
+                          />
+                        </div>
+                        <div className="param-item">
+                          <label>Epochs</label>
+                          <input
+                            type="number"
+                            value={finetuningParams.epochs}
+                            onChange={(e) =>
+                              setFinetuningParams({
+                                ...finetuningParams,
+                                epochs: parseInt(e.target.value, 10),
+                              })
+                            }
+                            min="1"
+                          />
+                        </div>
+                      </div>
                     </div>
-                  )}
+                  </div>
+
+                  <div className="params-column">
+                    <div className="params-group-card">
+                      <h3>Validation & Checkpointing</h3>
+                      <div className="param-item">
+                        <label>Validation Split</label>
+                        <div className="range-input-container">
+                          <input
+                            type="range"
+                            min="0.1"
+                            max="0.5"
+                            step="0.05"
+                            value={finetuningParams.validationSplit}
+                            onChange={(e) =>
+                              setFinetuningParams({
+                                ...finetuningParams,
+                                validationSplit: parseFloat(e.target.value),
+                              })
+                            }
+                          />
+                          <span className="range-value">{(finetuningParams.validationSplit * 100).toFixed(0)}%</span>
+                        </div>
+                        <p className="param-description">
+                          Portion of data held back for evaluation during training.
+                        </p>
+                      </div>
+
+                      <div className="param-item checkbox-item">
+                        <label className="checkbox-label">
+                          <input
+                            type="checkbox"
+                            checked={finetuningParams.checkpointEnabled}
+                            onChange={(e) =>
+                              setFinetuningParams({
+                                ...finetuningParams,
+                                checkpointEnabled: e.target.checked
+                              })
+                            }
+                          />
+                          <span>Enable Checkpointing</span>
+                        </label>
+                      </div>
+
+                      {finetuningParams.checkpointEnabled && (
+                        <div className="param-item animate-fade-in">
+                          <label>Checkpoint Interval (epochs)</label>
+                          <input
+                            type="number"
+                            value={finetuningParams.checkpointInterval}
+                            onChange={(e) =>
+                              setFinetuningParams({
+                                ...finetuningParams,
+                                checkpointInterval: Math.max(1, parseInt(e.target.value, 10) || 1)
+                              })
+                            }
+                            min="1"
+                          />
+                          <p className="param-description">Save model progress every N epochs.</p>
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
               </section>
 

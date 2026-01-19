@@ -843,9 +843,6 @@ class Trainer:
                 if (compute_bleu or compute_rouge) and pred_texts:
                     try:
                         import evaluate
-                    except Exception as e:
-                        logger.warning(f"Metric evaluation skipped (evaluate not available): {e}")
-                    else:
                         if compute_bleu:
                             bleu_metric = evaluate.load("bleu")
                             bleu_result = bleu_metric.compute(
@@ -860,9 +857,12 @@ class Trainer:
                                 references=ref_texts,
                                 use_stemmer=True
                             )
-                            eval_metrics['rouge1'] = rouge_result.get('rouge1')
-                            eval_metrics['rouge2'] = rouge_result.get('rouge2')
-                            eval_metrics['rougeL'] = rouge_result.get('rougeL')
+                            for key in ['rouge1', 'rouge2', 'rougeL']:
+                                score = rouge_result.get(key)
+                                if score is not None:
+                                    eval_metrics[key] = score.mid.fmeasure if hasattr(score, 'mid') else score
+                    except Exception as e:
+                        logger.warning(f"Metric evaluation failed: {e}")
 
                 if eval_hooks:
                     hook_context = {
@@ -901,43 +901,41 @@ class Trainer:
                 
                 logger.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {epoch_train_loss:.4f}, Val Loss: {val_loss:.4f}")
                 
-                # Save best model
-                should_save_epoch = checkpoint_enabled and ((epoch + 1) % checkpoint_interval_epochs == 0)
+                # Update best model whenever improvement is found
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    if should_save_epoch:
-                        logger.info(f"New best validation loss: {val_loss:.4f}. Saving model...")
+                    logger.info(f"New best validation loss: {val_loss:.4f}. Saving best model...")
+                    
+                    try:
+                        if training_method in ['lora', 'qlora']:
+                            model.save_pretrained(output_dir)
+                            logger.info("Saved LoRA model weights")
+                        else:
+                            model.save_pretrained(output_dir)
+                            tokenizer.save_pretrained(output_dir)
+                            logger.info("Saved full model and tokenizer")
                         
-                        try:
-                            if training_method in ['lora', 'qlora']:
-                                model.save_pretrained(output_dir)
-                                logger.info("Saved LoRA model weights")
-                            else:
-                                model.save_pretrained(output_dir)
-                                tokenizer.save_pretrained(output_dir)
-                                logger.info("Saved full model and tokenizer")
+                        # Save training configuration
+                        training_config = {
+                            'run_id': run_id,
+                            'model_id': model_id,
+                            'training_method': training_method,
+                            'best_val_loss': best_val_loss,
+                            'epochs_completed': epoch + 1,
+                            'training_params': params,
+                            'save_time': datetime.now().isoformat()
+                        }
+                        
+                        with open(run_dir / 'training_config.json', 'w') as f:
+                            json.dump(training_config, f, indent=2)
                             
-                            # Save training configuration
-                            training_config = {
-                                'run_id': run_id,
-                                'model_id': model_id,
-                                'training_method': training_method,
-                                'best_val_loss': best_val_loss,
-                                'epochs_completed': epoch + 1,
-                                'training_params': params,
-                                'save_time': datetime.now().isoformat()
-                            }
-                            
-                            with open(run_dir / 'training_config.json', 'w') as f:
-                                json.dump(training_config, f, indent=2)
-                                
-                            logger.info(f"Saved training configuration to {run_dir / 'training_config.json'}")
-                            
-                        except Exception as save_error:
-                            logger.error(f"Error saving model: {str(save_error)}")
-                            raise
+                        logger.info(f"Saved training configuration to {run_dir / 'training_config.json'}")
+                        
+                    except Exception as save_error:
+                        logger.error(f"Error saving model: {str(save_error)}")
 
-                if should_save_epoch:
+                # Save resume checkpoint if enabled and interval hit
+                if checkpoint_enabled and ((epoch + 1) % checkpoint_interval_epochs == 0):
                     checkpoint_state = {
                         'epoch': epoch + 1,
                         'global_step': current_step,
@@ -951,8 +949,8 @@ class Trainer:
                     }
                     self._save_checkpoint(checkpoint_path, checkpoint_state)
             
-            # Save final model state if it's the best one
-            if checkpoint_enabled and val_loss <= best_val_loss:
+            # Save final model state if it's the best one (regardless of checkpoint toggle)
+            if val_loss <= best_val_loss:
                 logger.info("Final model is the best model. Saving...")
                 if training_method in ['lora', 'qlora']:
                     model.save_pretrained(output_dir)
