@@ -23,9 +23,14 @@ export const AppProvider = ({ children }) => {
   const [isFetchingDownloadedModels, setIsFetchingDownloadedModels] = useState(false);
   const [isInitialDataFetched, setIsInitialDataFetched] = useState(false);
 
+  const hasAdminToken = useCallback(() => {
+    return Boolean(localStorage.getItem('adminToken'));
+  }, []);
+
   const fetchDownloadedModels = useCallback(async () => {
     // Prevent duplicate API calls
     if (isFetchingDownloadedModels) return;
+    if (!hasAdminToken()) return;
     
     try {
       setIsFetchingDownloadedModels(true);
@@ -39,11 +44,12 @@ export const AppProvider = ({ children }) => {
     } finally {
       setIsFetchingDownloadedModels(false);
     }
-  }, [api, isFetchingDownloadedModels]);
+  }, [api, isFetchingDownloadedModels, hasAdminToken]);
 
   const fetchSavedModels = useCallback(async () => {
     // Prevent duplicate API calls
     if (isFetchingSavedModels) return;
+    if (!hasAdminToken()) return;
     
     try {
       setIsFetchingSavedModels(true);
@@ -57,21 +63,23 @@ export const AppProvider = ({ children }) => {
     } finally {
       setIsFetchingSavedModels(false);
     }
-  }, [api, isFetchingSavedModels]);
+  }, [api, isFetchingSavedModels, hasAdminToken]);
 
   const fetchDownloadedDatasets = useCallback(async () => {
+    if (!hasAdminToken()) return;
     try {
       const data = await api.get(apiConfig.endpoints.datasets.downloaded);
       if (data.status === 'success') {
-        setDownloadedDatasets(data.downloaded_datasets || []);
+        setDownloadedDatasets(data.datasets || []);
       }
       return data;
     } catch (error) {
       console.error('Error fetching downloaded datasets:', error);
     }
-  }, [api]);
+  }, [api, hasAdminToken]);
 
   const fetchConfiguredDatasets = useCallback(async () => {
+    if (!hasAdminToken()) return;
     try {
       const data = await api.get(apiConfig.endpoints.datasets.configured);
       if (data.status === 'success') {
@@ -81,20 +89,21 @@ export const AppProvider = ({ children }) => {
     } catch (error) {
       console.error('Error fetching configured datasets:', error);
     }
-  }, [api]);
+  }, [api, hasAdminToken]);
 
   const fetchTrainingStatus = useCallback(async () => {
+    if (!hasAdminToken()) return;
     try {
       const data = await api.get(apiConfig.endpoints.training.status);
       if (data.status === 'success') {
-        setTrainingStatus(data.training_status);
-        setIsTraining(data.training_status?.status === 'training');
+        setTrainingStatus(data);
+        setIsTraining(Boolean(data.is_training));
       }
       return data;
     } catch (error) {
       console.error('Error fetching training status:', error);
     }
-  }, [api]);
+  }, [api, hasAdminToken]);
 
   const startTraining = useCallback(async (params) => {
     try {
@@ -129,6 +138,7 @@ export const AppProvider = ({ children }) => {
   const fetchInitialData = useCallback(async () => {
     // Prevent duplicate API calls
     if (isInitialDataFetched) return;
+    if (!hasAdminToken()) return;
     
     try {
       setIsInitialDataFetched(true);
@@ -142,7 +152,7 @@ export const AppProvider = ({ children }) => {
     } catch (error) {
       console.error('Error fetching initial data:', error);
     }
-  }, [fetchDownloadedModels, fetchSavedModels, fetchDownloadedDatasets, fetchConfiguredDatasets, fetchTrainingStatus, isInitialDataFetched]);
+  }, [fetchDownloadedModels, fetchSavedModels, fetchDownloadedDatasets, fetchConfiguredDatasets, fetchTrainingStatus, isInitialDataFetched, hasAdminToken]);
 
   useEffect(() => {
     fetchInitialData();

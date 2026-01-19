@@ -8,6 +8,7 @@ import ConfigForm from './components/ConfigForm';
 import apiConfig from './config';
 
 function App() {
+  const [adminToken, setAdminToken] = useState(() => localStorage.getItem('adminToken') || '');
   const [availableModels, setAvailableModels] = useState([]);
   const [selectedModel, setSelectedModel] = useState(null);
   const [finetuningParams, setFinetuningParams] = useState({
@@ -133,7 +134,25 @@ function App() {
   }, [getAuthHeaders]);
 
   useEffect(() => {
+    const updateAdminToken = () => {
+      const nextToken = localStorage.getItem('adminToken') || '';
+      setAdminToken(nextToken);
+    };
+    updateAdminToken();
+    window.addEventListener('storage', updateAdminToken);
+    window.addEventListener('admin-token-updated', updateAdminToken);
+    return () => {
+      window.removeEventListener('storage', updateAdminToken);
+      window.removeEventListener('admin-token-updated', updateAdminToken);
+    };
+  }, []);
+
+  useEffect(() => {
     const fetchInitialData = async () => {
+      const hasToken = Boolean(adminToken);
+      if (!hasToken) {
+        return;
+      }
       try {
         const [availableResponse, downloadedResponse] = await Promise.all([
           fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.available}`, { headers: getAuthHeaders() }),
@@ -174,7 +193,7 @@ function App() {
     };
 
     fetchInitialData();
-  }, [getAuthHeaders]);
+  }, [adminToken, getAuthHeaders]);
 
   useEffect(() => {
     let intervalId;

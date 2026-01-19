@@ -1,0 +1,42 @@
+.model-selector {
+  display: grid;
+  gap: 8px;
+}
+
+.model-selector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.model-selector-header label {
+  font-weight: 500;
+}
+
+.refresh-button {
+  border: 1px solid #ced4da;
+  background: white;
+  border-radius: 4px;
+  padding: 2px 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.refresh-button.refreshing {
+  cursor: wait;
+  color: #6c757d;
+}
+
+.refresh-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.model-select {
+  padding: 8px 10px;
+  border: 1px solid #ced4da;
+  border-radius: 4px;
+  font-size: 14px;
+  background: white;
+}

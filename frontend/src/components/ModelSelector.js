@@ -70,7 +70,7 @@ const ModelSelector = ({
           <>
             <optgroup label="Fine-tuned Models">
               {savedModels.map(model => (
-                <option key={model.name} value={model.path}>
+                <option key={model.name} value={model.name}>
                   {model.name}
                 </option>
               ))}

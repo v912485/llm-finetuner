@@ -3,7 +3,7 @@ from flask_cors import CORS
 from routes import model_routes, training_routes, dataset_routes, settings_routes
 from config.settings import setup_logging
 import os
-from utils.auth import is_request_authenticated
+from utils.auth import is_request_authenticated, is_admin_configured
 import re
 
 app = Flask(__name__)
@@ -39,6 +39,16 @@ logger = setup_logging()
 def _require_admin_token():
     if request.method == "OPTIONS":
         return None
+    if request.path == "/api/settings/admin_token":
+        if request.method == "GET":
+            return None
+        if request.method == "POST" and not is_admin_configured():
+            return None
+    if request.path == "/api/settings/huggingface_token":
+        if request.method == "GET":
+            return None
+        if request.method == "POST" and not is_admin_configured():
+            return None
     if request.path == "/api/health":
         return None
     if not request.path.startswith("/api/"):

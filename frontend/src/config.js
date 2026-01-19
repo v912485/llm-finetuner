@@ -27,6 +27,7 @@ const apiConfig = {
     },
     settings: {
       huggingfaceToken: '/settings/huggingface_token',
+      adminToken: '/settings/admin_token',
       config: '/settings/config'
     }
   }

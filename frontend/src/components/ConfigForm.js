@@ -4,15 +4,32 @@ const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) =>
   const [tempConfig, setTempConfig] = useState(currentConfig || {});
 
   useEffect(() => {
-    setTempConfig(currentConfig || {});
-  }, [currentConfig]);
+    const nextConfig = currentConfig || {};
+    const hasSingleField = Array.isArray(structure?.fields) && structure.fields.length === 1;
+    if (hasSingleField) {
+      const onlyField = structure.fields[0];
+      setTempConfig({
+        inputField: nextConfig.inputField || onlyField,
+        outputField: nextConfig.outputField || onlyField
+      });
+    } else {
+      setTempConfig(nextConfig);
+    }
+  }, [currentConfig, structure]);
 
   const handleSaveConfig = () => {
-    if (!tempConfig.inputField || !tempConfig.outputField) {
+    const hasSingleField = Array.isArray(structure?.fields) && structure.fields.length === 1;
+    const onlyField = hasSingleField ? structure.fields[0] : '';
+    const nextConfig = {
+      ...tempConfig,
+      inputField: tempConfig.inputField || (hasSingleField ? onlyField : ''),
+      outputField: tempConfig.outputField || (hasSingleField ? (tempConfig.inputField || onlyField) : '')
+    };
+    if (!nextConfig.inputField || !nextConfig.outputField) {
       alert('Please select both input and output fields');
       return;
     }
-    onSave(file.path, tempConfig);
+    onSave(file.dataset_id, nextConfig);
   };
 
   return (
@@ -35,11 +52,15 @@ const ConfigForm = ({ file, structure, currentConfig, onSave, isConfigured }) =>
       <div className="config-field">
         <label>Output Field:</label>
         <select
-          value={tempConfig.outputField || ''}
+          value={
+            tempConfig.outputField ||
+            (Array.isArray(structure?.fields) && structure.fields.length === 1 ? structure.fields[0] : '')
+          }
           onChange={(e) => setTempConfig(prev => ({
             ...prev,
             outputField: e.target.value
           }))}
+          disabled={Array.isArray(structure?.fields) && structure.fields.length === 1}
         >
           <option value="">Select output field</option>
           {structure.fields.map(field => (

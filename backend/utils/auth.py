@@ -8,6 +8,10 @@ def _get_admin_token() -> str | None:
     return token.strip() if token else None
 
 
+def is_admin_configured() -> bool:
+    return bool(_get_admin_token())
+
+
 def is_request_authenticated() -> bool:
     admin_token = _get_admin_token()
     if not admin_token:
@@ -33,6 +37,7 @@ def require_admin(fn):
         return fn(*args, **kwargs)
 
     return wrapper
+
 
 
 
