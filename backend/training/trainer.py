@@ -14,6 +14,7 @@ import random
 import uuid
 from utils.datasets import resolve_dataset_path, load_json_dataset
 import threading
+import importlib
 
 logger = logging.getLogger('training')
 
@@ -126,6 +127,48 @@ class Trainer:
                 except json.JSONDecodeError:
                     continue
         return history
+
+    def _resolve_eval_hooks(self, hook_specs):
+        hooks = []
+        for spec in hook_specs:
+            if not spec:
+                continue
+            module_path = None
+            func_name = None
+            if isinstance(spec, dict):
+                module_path = spec.get('module')
+                func_name = spec.get('function')
+            elif isinstance(spec, str):
+                if ':' in spec:
+                    module_path, func_name = spec.split(':', 1)
+                elif '.' in spec:
+                    module_path, func_name = spec.rsplit('.', 1)
+            if not module_path or not func_name:
+                logger.warning(f"Invalid eval hook spec: {spec}")
+                continue
+            try:
+                module = importlib.import_module(module_path)
+                hook = getattr(module, func_name, None)
+                if not callable(hook):
+                    logger.warning(f"Eval hook not callable: {module_path}.{func_name}")
+                    continue
+                hooks.append((f"{module_path}.{func_name}", hook))
+            except Exception as e:
+                logger.warning(f"Failed to load eval hook {spec}: {e}")
+        return hooks
+
+    def _apply_eval_hooks(self, hooks, context):
+        results = {}
+        for name, hook in hooks:
+            try:
+                payload = hook(context)
+                if isinstance(payload, dict):
+                    results.update(payload)
+                elif payload is not None:
+                    results[name] = payload
+            except Exception as e:
+                logger.warning(f"Eval hook {name} failed: {e}")
+        return results
 
     def _save_checkpoint(self, checkpoint_path, state):
         checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
@@ -313,9 +356,24 @@ class Trainer:
             training_method = params.get('training_method', 'standard')
             max_length = int(params.get('maxLength', MAX_LENGTH))
             grad_accum_steps = int(params.get('gradientAccumulationSteps', GRADIENT_ACCUMULATION_STEPS))
+            checkpoint_enabled = bool(params.get('checkpoint_enabled', True))
+            checkpoint_interval_epochs = int(params.get('checkpoint_interval_epochs', 1))
+            if checkpoint_interval_epochs < 1:
+                checkpoint_interval_epochs = 1
             seed = params.get('seed')
             if seed is None:
                 seed = random.randint(0, 2**32 - 1)
+
+            eval_metric_names = params.get('eval_metrics')
+            if eval_metric_names is None:
+                eval_metric_names = ['accuracy', 'bleu', 'rouge']
+            eval_metric_set = {str(name).lower() for name in eval_metric_names}
+            compute_accuracy = 'accuracy' in eval_metric_set or 'token_accuracy' in eval_metric_set
+            compute_bleu = 'bleu' in eval_metric_set
+            compute_rouge = 'rouge' in eval_metric_set or any(
+                name in eval_metric_set for name in ['rouge1', 'rouge2', 'rougel']
+            )
+            eval_hooks = self._resolve_eval_hooks(params.get('eval_hooks', []))
             
             logger.info(f"Training parameters:")
             logger.info(f"- Device: {self.device}")
@@ -326,6 +384,12 @@ class Trainer:
             logger.info(f"- Training method: {training_method}")
             logger.info(f"- Max length: {max_length}")
             logger.info(f"- Gradient accumulation steps: {grad_accum_steps}")
+            logger.info(f"- Checkpointing enabled: {checkpoint_enabled}")
+            if checkpoint_enabled:
+                logger.info(f"- Checkpoint interval (epochs): {checkpoint_interval_epochs}")
+            logger.info(f"- Eval metrics: {sorted(eval_metric_set) if eval_metric_set else 'none'}")
+            if eval_hooks:
+                logger.info(f"- Eval hooks: {[name for name, _ in eval_hooks]}")
             resume_from_run_id = params.get('resume_run_id') or params.get('resume_from_run_id')
             resume_from_checkpoint_path = params.get('resume_checkpoint_path')
             restart_from_run_id = params.get('restart_from_run_id')
@@ -712,6 +776,10 @@ class Trainer:
                 # Validation phase
                 model.eval()
                 val_loss = 0
+                token_correct = 0
+                token_total = 0
+                pred_texts = []
+                ref_texts = []
                 with torch.no_grad():
                     for batch in val_dataloader:
                         if self._cancel_event.is_set():
@@ -740,12 +808,75 @@ class Trainer:
                         )
                         
                         val_loss += outputs.loss.item()
+                        if compute_accuracy or compute_bleu or compute_rouge:
+                            logits = outputs.logits
+                            pred_ids = torch.argmax(logits, dim=-1)
+                            label_mask = labels != -100
+                            if label_mask.any():
+                                if compute_accuracy:
+                                    token_correct += (pred_ids[label_mask] == labels[label_mask]).sum().item()
+                                    token_total += label_mask.sum().item()
+                                if compute_bleu or compute_rouge:
+                                    for row_idx in range(labels.size(0)):
+                                        row_mask = label_mask[row_idx]
+                                        if not row_mask.any():
+                                            continue
+                                        pred_tokens = pred_ids[row_idx][row_mask].tolist()
+                                        label_tokens = labels[row_idx][row_mask].tolist()
+                                        pred_text = tokenizer.decode(pred_tokens, skip_special_tokens=True).strip()
+                                        ref_text = tokenizer.decode(label_tokens, skip_special_tokens=True).strip()
+                                        if pred_text or ref_text:
+                                            pred_texts.append(pred_text)
+                                            ref_texts.append(ref_text)
+
                         current_step += 1
                         progress = (current_step / total_steps) * 100
                         self.training_status['progress'] = round(progress, 2)
                 
                 val_loss = val_loss / len(val_dataloader)
                 epoch_train_loss = train_loss / len(train_dataloader)
+
+                eval_metrics = {}
+                if compute_accuracy and token_total > 0:
+                    eval_metrics['accuracy'] = token_correct / token_total
+
+                if (compute_bleu or compute_rouge) and pred_texts:
+                    try:
+                        import evaluate
+                    except Exception as e:
+                        logger.warning(f"Metric evaluation skipped (evaluate not available): {e}")
+                    else:
+                        if compute_bleu:
+                            bleu_metric = evaluate.load("bleu")
+                            bleu_result = bleu_metric.compute(
+                                predictions=pred_texts,
+                                references=[[ref] for ref in ref_texts]
+                            )
+                            eval_metrics['bleu'] = bleu_result.get('bleu')
+                        if compute_rouge:
+                            rouge_metric = evaluate.load("rouge")
+                            rouge_result = rouge_metric.compute(
+                                predictions=pred_texts,
+                                references=ref_texts,
+                                use_stemmer=True
+                            )
+                            eval_metrics['rouge1'] = rouge_result.get('rouge1')
+                            eval_metrics['rouge2'] = rouge_result.get('rouge2')
+                            eval_metrics['rougeL'] = rouge_result.get('rougeL')
+
+                if eval_hooks:
+                    hook_context = {
+                        'epoch': epoch + 1,
+                        'train_loss': epoch_train_loss,
+                        'val_loss': val_loss,
+                        'metrics': dict(eval_metrics),
+                        'predictions': list(pred_texts),
+                        'references': list(ref_texts),
+                        'run_id': run_id,
+                        'model_id': model_id,
+                        'params': params
+                    }
+                    eval_metrics.update(self._apply_eval_hooks(eval_hooks, hook_context))
                 
                 # Add metrics to history
                 epoch_metrics = {
@@ -753,7 +884,8 @@ class Trainer:
                     'train_loss': epoch_train_loss,
                     'val_loss': val_loss,
                     'run_id': run_id,
-                    'timestamp': datetime.now().isoformat()
+                    'timestamp': datetime.now().isoformat(),
+                    **eval_metrics
                 }
                 self.training_status['history'].append(epoch_metrics)
                 self._append_metrics(run_dir, epoch_metrics)
@@ -770,54 +902,57 @@ class Trainer:
                 logger.info(f"Epoch {epoch+1}/{num_epochs}, Train Loss: {epoch_train_loss:.4f}, Val Loss: {val_loss:.4f}")
                 
                 # Save best model
+                should_save_epoch = checkpoint_enabled and ((epoch + 1) % checkpoint_interval_epochs == 0)
                 if val_loss < best_val_loss:
                     best_val_loss = val_loss
-                    logger.info(f"New best validation loss: {val_loss:.4f}. Saving model...")
-                    
-                    try:
-                        if training_method in ['lora', 'qlora']:
-                            model.save_pretrained(output_dir)
-                            logger.info("Saved LoRA model weights")
-                        else:
-                            model.save_pretrained(output_dir)
-                            tokenizer.save_pretrained(output_dir)
-                            logger.info("Saved full model and tokenizer")
+                    if should_save_epoch:
+                        logger.info(f"New best validation loss: {val_loss:.4f}. Saving model...")
                         
-                        # Save training configuration
-                        training_config = {
-                            'run_id': run_id,
-                            'model_id': model_id,
-                            'training_method': training_method,
-                            'best_val_loss': best_val_loss,
-                            'epochs_completed': epoch + 1,
-                            'training_params': params,
-                            'save_time': datetime.now().isoformat()
-                        }
-                        
-                        with open(run_dir / 'training_config.json', 'w') as f:
-                            json.dump(training_config, f, indent=2)
+                        try:
+                            if training_method in ['lora', 'qlora']:
+                                model.save_pretrained(output_dir)
+                                logger.info("Saved LoRA model weights")
+                            else:
+                                model.save_pretrained(output_dir)
+                                tokenizer.save_pretrained(output_dir)
+                                logger.info("Saved full model and tokenizer")
                             
-                        logger.info(f"Saved training configuration to {run_dir / 'training_config.json'}")
-                        
-                    except Exception as save_error:
-                        logger.error(f"Error saving model: {str(save_error)}")
-                        raise
+                            # Save training configuration
+                            training_config = {
+                                'run_id': run_id,
+                                'model_id': model_id,
+                                'training_method': training_method,
+                                'best_val_loss': best_val_loss,
+                                'epochs_completed': epoch + 1,
+                                'training_params': params,
+                                'save_time': datetime.now().isoformat()
+                            }
+                            
+                            with open(run_dir / 'training_config.json', 'w') as f:
+                                json.dump(training_config, f, indent=2)
+                                
+                            logger.info(f"Saved training configuration to {run_dir / 'training_config.json'}")
+                            
+                        except Exception as save_error:
+                            logger.error(f"Error saving model: {str(save_error)}")
+                            raise
 
-                checkpoint_state = {
-                    'epoch': epoch + 1,
-                    'global_step': current_step,
-                    'model_state': model.state_dict(),
-                    'optimizer_state': optimizer.state_dict(),
-                    'scheduler_state': scheduler.state_dict(),
-                    'best_val_loss': best_val_loss,
-                    'seed': seed,
-                    'rng_state': torch.get_rng_state(),
-                    'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
-                }
-                self._save_checkpoint(checkpoint_path, checkpoint_state)
+                if should_save_epoch:
+                    checkpoint_state = {
+                        'epoch': epoch + 1,
+                        'global_step': current_step,
+                        'model_state': model.state_dict(),
+                        'optimizer_state': optimizer.state_dict(),
+                        'scheduler_state': scheduler.state_dict(),
+                        'best_val_loss': best_val_loss,
+                        'seed': seed,
+                        'rng_state': torch.get_rng_state(),
+                        'cuda_rng_state': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None
+                    }
+                    self._save_checkpoint(checkpoint_path, checkpoint_state)
             
             # Save final model state if it's the best one
-            if val_loss <= best_val_loss:
+            if checkpoint_enabled and val_loss <= best_val_loss:
                 logger.info("Final model is the best model. Saving...")
                 if training_method in ['lora', 'qlora']:
                     model.save_pretrained(output_dir)

@@ -16,6 +16,8 @@ function App() {
     batchSize: 8,
     epochs: 3,
     validationSplit: 0.2,
+    checkpointEnabled: false,
+    checkpointInterval: 1
   });
   const [loading, setLoading] = useState({});
   const [error, setError] = useState({});
@@ -509,6 +511,8 @@ function App() {
             epochs: finetuningParams.epochs,
             validationSplit: finetuningParams.validationSplit,
             training_method: trainingMethod,
+            checkpoint_enabled: finetuningParams.checkpointEnabled,
+            checkpoint_interval_epochs: finetuningParams.checkpointInterval,
             force_single_gpu: true,
             gpu_index: 0
           }
@@ -1133,6 +1137,35 @@ function App() {
                       Portion of data used for validation (10-50%)
                     </span>
                   </div>
+                  <div className="param-group">
+                    <label>Enable Checkpointing:</label>
+                    <input
+                      type="checkbox"
+                      checked={finetuningParams.checkpointEnabled}
+                      onChange={(e) =>
+                        setFinetuningParams({
+                          ...finetuningParams,
+                          checkpointEnabled: e.target.checked
+                        })
+                      }
+                    />
+                  </div>
+                  {finetuningParams.checkpointEnabled && (
+                    <div className="param-group">
+                      <label>Checkpoint Interval (epochs):</label>
+                      <input
+                        type="number"
+                        value={finetuningParams.checkpointInterval}
+                        onChange={(e) =>
+                          setFinetuningParams({
+                            ...finetuningParams,
+                            checkpointInterval: Math.max(1, parseInt(e.target.value, 10) || 1)
+                          })
+                        }
+                        min="1"
+                      />
+                    </div>
+                  )}
                 </div>
               </section>
 

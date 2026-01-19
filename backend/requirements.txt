@@ -13,5 +13,6 @@ peft
 sentencepiece
 scikit-learn
 tqdm
+evaluate
 
 pytest
