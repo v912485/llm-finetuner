@@ -17,7 +17,10 @@ const apiConfig = {
       configured: '/datasets/configured',
       downloaded: '/datasets/downloaded',
       structure: '/datasets/structure',
-      config: '/datasets/config'
+      config: '/datasets/config',
+      delete: '/datasets',
+      rename: '/datasets',
+      version: '/datasets'
     },
     training: {
       start: '/training/start',

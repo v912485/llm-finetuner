@@ -2,16 +2,61 @@ from flask import Blueprint, jsonify, request
 import os
 import json
 import csv
+import shutil
 from pathlib import Path
 from datetime import datetime
 from config.settings import DATASETS_DIR, CONFIG_DIR
 import logging
 from uuid import uuid4
 from werkzeug.utils import secure_filename
-from utils.datasets import resolve_dataset_path, split_dataset_filename, load_json_dataset
+from utils.datasets import (
+    resolve_dataset_path,
+    split_dataset_filename,
+    load_json_dataset,
+    load_dataset_metadata,
+    save_dataset_metadata,
+    list_dataset_metadata,
+    dataset_metadata_path,
+)
 
 bp = Blueprint('datasets', __name__, url_prefix='/api/datasets')
 logger = logging.getLogger('training')
+
+
+def build_dataset_metadata(dataset_id, name, version, parent_id, created_at=None, updated_at=None):
+    now = datetime.now().isoformat()
+    return {
+        "dataset_id": dataset_id,
+        "name": name,
+        "version": version,
+        "parent_id": parent_id,
+        "created_at": created_at or now,
+        "updated_at": updated_at or now,
+    }
+
+
+def normalise_display_name(raw_name, extension):
+    display_name = (raw_name or "").strip()
+    if not display_name:
+        return ""
+    suffix = Path(display_name).suffix
+    if suffix and extension and suffix.lower() != extension.lower():
+        return ""
+    if extension and not display_name.lower().endswith(extension.lower()):
+        display_name = f"{display_name}{extension}"
+    return display_name
+
+
+def resolve_dataset_display(dataset_id, dataset_path):
+    metadata = load_dataset_metadata(CONFIG_DIR, dataset_id)
+    if metadata and metadata.get("name"):
+        display_name = metadata["name"]
+        version = metadata.get("version", 1)
+        parent_id = metadata.get("parent_id", dataset_id)
+        return display_name, version, parent_id
+
+    _, display_name = split_dataset_filename(dataset_path.name)
+    return display_name, 1, dataset_id
 
 def analyze_file_structure(file_path):
     ext = Path(file_path).suffix.lower()
@@ -145,6 +190,13 @@ def prepare_dataset():
         
         file_structure = analyze_file_structure(dataset_path)
         stats = os.stat(dataset_path)
+        metadata = build_dataset_metadata(
+            dataset_id=dataset_id,
+            name=original_name,
+            version=1,
+            parent_id=dataset_id,
+        )
+        save_dataset_metadata(CONFIG_DIR, dataset_id, metadata)
         
         return jsonify({
             "status": "success",
@@ -176,7 +228,7 @@ def get_configured_datasets():
                     
                     if dataset_path.exists():
                         stats = os.stat(dataset_path)
-                        parsed_id, display_name = split_dataset_filename(dataset_path.name)
+                        display_name, version, parent_id = resolve_dataset_display(dataset_id, dataset_path)
                         safe_config = {
                             "input_field": dataset_config.get("input_field"),
                             "output_field": dataset_config.get("output_field"),
@@ -187,6 +239,8 @@ def get_configured_datasets():
                             "name": display_name,
                             "size": stats.st_size,
                             "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat(),
+                            "version": version,
+                            "parent_id": parent_id,
                             "config": safe_config
                         })
         
@@ -211,12 +265,15 @@ def get_downloaded_datasets():
             for file_path in DATASETS_DIR.iterdir():
                 if file_path.is_file():
                     stats = os.stat(file_path)
-                    dataset_id, display_name = split_dataset_filename(file_path.name)
+                    dataset_id, _ = split_dataset_filename(file_path.name)
+                    display_name, version, parent_id = resolve_dataset_display(dataset_id, file_path)
                     datasets.append({
                         "dataset_id": dataset_id,
                         "name": display_name,
                         "size": stats.st_size,
-                        "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat()
+                        "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat(),
+                        "version": version,
+                        "parent_id": parent_id,
                     })
         
         return jsonify({
@@ -319,6 +376,162 @@ def save_dataset_config():
         
     except Exception as e:
         logger.error(f"Error saving dataset config: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@bp.route('/<dataset_id>', methods=['DELETE'])
+def delete_dataset(dataset_id):
+    try:
+        dataset_path = resolve_dataset_path(DATASETS_DIR, dataset_id)
+        if dataset_path.exists():
+            dataset_path.unlink()
+
+        config_path = CONFIG_DIR / f"{dataset_id}.config.json"
+        if config_path.exists():
+            config_path.unlink()
+
+        meta_path = dataset_metadata_path(CONFIG_DIR, dataset_id)
+        if meta_path.exists():
+            meta_path.unlink()
+
+        return jsonify({
+            "status": "success",
+            "message": "Dataset deleted successfully",
+            "dataset_id": dataset_id,
+        })
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Error deleting dataset: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@bp.route('/<dataset_id>/rename', methods=['PATCH'])
+def rename_dataset(dataset_id):
+    try:
+        data = request.json or {}
+        raw_name = data.get("name")
+        if not raw_name or not str(raw_name).strip():
+            return jsonify({"status": "error", "message": "name is required"}), 400
+
+        dataset_path = resolve_dataset_path(DATASETS_DIR, dataset_id)
+        extension = dataset_path.suffix
+        display_name = normalise_display_name(str(raw_name).strip(), extension)
+        if not display_name:
+            return jsonify({"status": "error", "message": "Invalid name"}), 400
+
+        safe_base = secure_filename(Path(display_name).stem)
+        if not safe_base:
+            return jsonify({"status": "error", "message": "Invalid name"}), 400
+
+        new_filename = f"{dataset_id}_{safe_base}{extension}"
+        new_path = dataset_path.with_name(new_filename)
+        if new_path.exists() and new_path != dataset_path:
+            return jsonify({"status": "error", "message": "A dataset with this name already exists"}), 409
+
+        if new_path != dataset_path:
+            dataset_path.rename(new_path)
+
+        existing = load_dataset_metadata(CONFIG_DIR, dataset_id)
+        if existing:
+            metadata = existing
+            metadata["name"] = display_name
+            metadata["updated_at"] = datetime.now().isoformat()
+            metadata.setdefault("version", 1)
+            metadata.setdefault("parent_id", dataset_id)
+        else:
+            metadata = build_dataset_metadata(
+                dataset_id=dataset_id,
+                name=display_name,
+                version=1,
+                parent_id=dataset_id,
+            )
+        save_dataset_metadata(CONFIG_DIR, dataset_id, metadata)
+
+        stats = os.stat(new_path)
+        return jsonify({
+            "status": "success",
+            "message": "Dataset renamed successfully",
+            "dataset": {
+                "dataset_id": dataset_id,
+                "name": display_name,
+                "size": stats.st_size,
+                "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat(),
+                "version": metadata.get("version", 1),
+                "parent_id": metadata.get("parent_id", dataset_id),
+            }
+        })
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Error renaming dataset: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@bp.route('/<dataset_id>/version', methods=['POST'])
+def create_dataset_version(dataset_id):
+    try:
+        dataset_path = resolve_dataset_path(DATASETS_DIR, dataset_id)
+        display_name, _, _ = resolve_dataset_display(dataset_id, dataset_path)
+        metadata = load_dataset_metadata(CONFIG_DIR, dataset_id)
+        parent_id = metadata.get("parent_id", dataset_id) if metadata else dataset_id
+
+        max_version = 1
+        for item in list_dataset_metadata(CONFIG_DIR):
+            if item.get("parent_id") == parent_id:
+                try:
+                    max_version = max(max_version, int(item.get("version", 0)))
+                except (TypeError, ValueError):
+                    continue
+        new_version = max_version + 1
+
+        new_dataset_id = uuid4().hex
+        extension = dataset_path.suffix
+        safe_base = secure_filename(Path(display_name).stem) or "dataset"
+        new_filename = f"{new_dataset_id}_{safe_base}{extension}"
+        new_path = DATASETS_DIR / new_filename
+        shutil.copy2(dataset_path, new_path)
+
+        new_metadata = build_dataset_metadata(
+            dataset_id=new_dataset_id,
+            name=display_name,
+            version=new_version,
+            parent_id=parent_id,
+        )
+        save_dataset_metadata(CONFIG_DIR, new_dataset_id, new_metadata)
+
+        stats = os.stat(new_path)
+        return jsonify({
+            "status": "success",
+            "message": "Dataset version created successfully",
+            "dataset": {
+                "dataset_id": new_dataset_id,
+                "name": display_name,
+                "size": stats.st_size,
+                "uploadedAt": datetime.fromtimestamp(stats.st_mtime).isoformat(),
+                "version": new_version,
+                "parent_id": parent_id,
+            }
+        })
+    except ValueError as e:
+        return jsonify({"status": "error", "message": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"status": "error", "message": str(e)}), 404
+    except Exception as e:
+        logger.error(f"Error creating dataset version: {str(e)}")
         return jsonify({
             "status": "error",
             "message": str(e)

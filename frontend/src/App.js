@@ -38,6 +38,7 @@ function App() {
   const [showAddModel, setShowAddModel] = useState(false);
   const [newModelId, setNewModelId] = useState('');
   const [newModelName, setNewModelName] = useState('');
+  const [openDatasetMenuId, setOpenDatasetMenuId] = useState(null);
 
   const getAuthHeaders = useCallback((extraHeaders = {}) => {
     const token = localStorage.getItem('adminToken');
@@ -684,6 +685,98 @@ function App() {
     }
   };
 
+  const handleDatasetDelete = async (datasetId) => {
+    if (!window.confirm('Are you sure you want to delete this dataset?')) return;
+
+    try {
+      const encodedId = encodeURIComponent(datasetId);
+      const response = await fetch(
+        `${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.delete}/${encodedId}`,
+        { method: 'DELETE', headers: getAuthHeaders() }
+      );
+      const data = await response.json();
+      if (data.status === 'success') {
+        setDownloadedDatasets(prev => prev.filter(dataset => dataset.dataset_id !== datasetId));
+        setSelectedFiles(prev => prev.filter(id => id !== datasetId));
+        setConfiguredFiles(prev => prev.filter(id => id !== datasetId));
+        setDatasetConfigs(prev => {
+          const next = { ...prev };
+          delete next[datasetId];
+          return next;
+        });
+        setFileConfig(prev => {
+          const next = { ...prev };
+          delete next[datasetId];
+          return next;
+        });
+        setFileStructures(prev => {
+          const next = { ...prev };
+          delete next[datasetId];
+          return next;
+        });
+      } else {
+        alert(data.message || 'Failed to delete dataset');
+      }
+    } catch (error) {
+      console.error('Error deleting dataset:', error);
+      alert('Error deleting dataset');
+    }
+  };
+
+  const handleDatasetRename = async (dataset) => {
+    const nextName = window.prompt('Enter a new dataset name', dataset.name);
+    if (!nextName || nextName.trim() === dataset.name) return;
+
+    try {
+      const encodedId = encodeURIComponent(dataset.dataset_id);
+      const response = await fetch(
+        `${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.rename}/${encodedId}/rename`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+          },
+          body: JSON.stringify({ name: nextName.trim() })
+        }
+      );
+      const data = await response.json();
+      if (data.status === 'success') {
+        setDownloadedDatasets(prev => prev.map(item => (
+          item.dataset_id === dataset.dataset_id ? { ...item, ...data.dataset } : item
+        )));
+      } else {
+        alert(data.message || 'Failed to rename dataset');
+      }
+    } catch (error) {
+      console.error('Error renaming dataset:', error);
+      alert('Error renaming dataset');
+    }
+  };
+
+  const handleDatasetVersion = async (datasetId) => {
+    try {
+      const encodedId = encodeURIComponent(datasetId);
+      const response = await fetch(
+        `${apiConfig.apiBaseUrl}${apiConfig.endpoints.datasets.version}/${encodedId}/version`,
+        { method: 'POST', headers: getAuthHeaders() }
+      );
+      const data = await response.json();
+      if (data.status === 'success') {
+        setDownloadedDatasets(prev => [data.dataset, ...prev]);
+      } else {
+        alert(data.message || 'Failed to create dataset version');
+      }
+    } catch (error) {
+      console.error('Error creating dataset version:', error);
+      alert('Error creating dataset version');
+    }
+  };
+
+  const toggleDatasetMenu = (datasetId) => {
+    setOpenDatasetMenuId(prev => (prev === datasetId ? null : datasetId));
+  };
+
   return (
     <Router>
       <div className="App">
@@ -804,6 +897,9 @@ function App() {
                           <div className={`dataset-item ${isSelected ? 'selected' : ''} ${isConfigured ? 'configured' : ''}`}>
                             <div className="dataset-info">
                               <span className="dataset-name">{dataset.name}</span>
+                              {Number.isFinite(dataset.version) && (
+                                <span className="dataset-version">v{dataset.version}</span>
+                              )}
                               <span className="dataset-size">
                                 {(dataset.size / 1024).toFixed(2)} KB
                               </span>
@@ -833,6 +929,54 @@ function App() {
                               >
                                 {isConfigured ? 'Edit Config' : 'Configure'}
                               </button>
+                              <div className="dataset-menu">
+                                <button
+                                  type="button"
+                                  className="dataset-menu-button"
+                                  onClick={() => toggleDatasetMenu(dataset.dataset_id)}
+                                  aria-haspopup="menu"
+                                  aria-expanded={openDatasetMenuId === dataset.dataset_id}
+                                >
+                                  ...
+                                </button>
+                                {openDatasetMenuId === dataset.dataset_id && (
+                                  <div className="dataset-menu-dropdown" role="menu">
+                                    <button
+                                      type="button"
+                                      className="dataset-version-btn"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        toggleDatasetMenu(dataset.dataset_id);
+                                        handleDatasetVersion(dataset.dataset_id);
+                                      }}
+                                    >
+                                      New Version
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="dataset-rename-btn"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        toggleDatasetMenu(dataset.dataset_id);
+                                        handleDatasetRename(dataset);
+                                      }}
+                                    >
+                                      Rename
+                                    </button>
+                                    <button
+                                      type="button"
+                                      className="dataset-delete-btn"
+                                      role="menuitem"
+                                      onClick={() => {
+                                        toggleDatasetMenu(dataset.dataset_id);
+                                        handleDatasetDelete(dataset.dataset_id);
+                                      }}
+                                    >
+                                      Delete
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
                           {isSelected && (

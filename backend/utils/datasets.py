@@ -63,6 +63,45 @@ def split_dataset_filename(filename: str) -> tuple[str, str]:
     return stem, stem.replace("_", " ")
 
 
+def dataset_metadata_path(config_dir: Path, dataset_id: str) -> Path:
+    if not _is_safe_id(dataset_id):
+        raise ValueError("Invalid dataset_id")
+    return config_dir / f"{dataset_id}.meta.json"
+
+
+def load_dataset_metadata(config_dir: Path, dataset_id: str) -> dict | None:
+    path = dataset_metadata_path(config_dir, dataset_id)
+    if not path.exists():
+        return None
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def save_dataset_metadata(config_dir: Path, dataset_id: str, metadata: dict) -> None:
+    path = dataset_metadata_path(config_dir, dataset_id)
+    config_dir.mkdir(exist_ok=True)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(metadata, f, indent=2)
+
+
+def list_dataset_metadata(config_dir: Path) -> list[dict]:
+    results: list[dict] = []
+    if not config_dir.exists():
+        return results
+    for meta_path in config_dir.glob("*.meta.json"):
+        try:
+            with open(meta_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                results.append(data)
+        except Exception:
+            continue
+    return results
+
+
 def _load_jsonl(path: Path) -> list:
     records: list = []
     with open(path, "r", encoding="utf-8", errors="replace") as f:
