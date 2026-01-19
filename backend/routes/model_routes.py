@@ -83,72 +83,99 @@ def _sanitize_saved_model_name(name: str) -> str:
     return safe
 
 
+def _resolve_base_model_path(model_path: Path) -> tuple[Path, bool]:
+    is_peft = (model_path / "adapter_config.json").exists()
+    if not is_peft:
+        return model_path, False
+
+    logger.info(f"Loading LoRA adapter from {model_path}")
+    base_model_id = None
+    metadata_path = model_path / "metadata.json"
+    if metadata_path.exists():
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+                base_model_id = metadata.get('original_model') or metadata.get('base_model_id')
+        except Exception as e:
+            logger.warning(f"Error reading metadata.json: {e}")
+
+    if not base_model_id:
+        config_path = model_path / "training_config.json"
+        if config_path.exists():
+            try:
+                with open(config_path, 'r') as f:
+                    t_config = json.load(f)
+                    base_model_id = t_config.get('model_id')
+            except Exception as e:
+                logger.warning(f"Error reading training_config.json: {e}")
+
+    if not base_model_id:
+        raise ValueError(f"Could not determine base model for adapter at {model_path}")
+
+    logger.info(f"Base model identified: {base_model_id}")
+    safe_base_name = base_model_id.replace('/', '_')
+    base_model_path = MODELS_DIR / safe_base_name
+    if not base_model_path.exists():
+        raise ValueError(f"Base model {base_model_id} not found at {base_model_path}. Please download it first.")
+
+    return base_model_path, True
+
+
 def _load_model_and_tokenizer(model_path: Path, device_type: str):
     """Helper to load model and tokenizer, handling both base models and LoRA adapters."""
-    # Check if it's a LoRA adapter
-    is_peft = (model_path / "adapter_config.json").exists()
-    
+    base_model_path, is_peft = _resolve_base_model_path(model_path)
     if is_peft:
-        logger.info(f"Loading LoRA adapter from {model_path}")
-        # Load metadata to find the base model
-        base_model_id = None
-        metadata_path = model_path / "metadata.json"
-        if metadata_path.exists():
-            try:
-                with open(metadata_path, 'r') as f:
-                    metadata = json.load(f)
-                    base_model_id = metadata.get('original_model') or metadata.get('base_model_id')
-            except Exception as e:
-                logger.warning(f"Error reading metadata.json: {e}")
-        
-        if not base_model_id:
-            # Try training_config.json
-            config_path = model_path / "training_config.json"
-            if config_path.exists():
-                try:
-                    with open(config_path, 'r') as f:
-                        t_config = json.load(f)
-                        base_model_id = t_config.get('model_id')
-                except Exception as e:
-                    logger.warning(f"Error reading training_config.json: {e}")
-
-        if not base_model_id:
-            raise ValueError(f"Could not determine base model for adapter at {model_path}")
-
-        logger.info(f"Base model identified: {base_model_id}")
-
-        # Determine base model path
-        safe_base_name = base_model_id.replace('/', '_')
-        base_model_path = MODELS_DIR / safe_base_name
-        
-        if not base_model_path.exists():
-            raise ValueError(f"Base model {base_model_id} not found at {base_model_path}. Please download it first.")
-
-        # Load tokenizer from base model path
         tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
-        
-        # Load base model
         base_model = AutoModelForCausalLM.from_pretrained(
             base_model_path,
             trust_remote_code=True,
             torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
         )
-        
-        # Load PEFT model
         if PeftModel is None:
             raise ValueError("PEFT library not installed; cannot load LoRA adapter.")
         model = PeftModel.from_pretrained(base_model, model_path)
         return model, tokenizer
-    else:
-        # Standard model
-        logger.info(f"Loading standard model from {model_path}")
-        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        model = AutoModelForCausalLM.from_pretrained(
-            model_path,
-            trust_remote_code=True,
-            torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
-        )
-        return model, tokenizer
+
+    logger.info(f"Loading standard model from {model_path}")
+    tokenizer = AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+    model = AutoModelForCausalLM.from_pretrained(
+        base_model_path,
+        trust_remote_code=True,
+        torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
+    )
+    return model, tokenizer
+
+
+def _load_tokenizer(model_path: Path):
+    base_model_path, _ = _resolve_base_model_path(model_path)
+    return AutoTokenizer.from_pretrained(base_model_path, trust_remote_code=True)
+
+
+def _build_chat_prompt(messages: list[dict], tokenizer):
+    add_generation_prompt = True
+    if messages and messages[-1].get("role") == "assistant":
+        add_generation_prompt = False
+
+    if tokenizer is not None:
+        chat_template = getattr(tokenizer, "chat_template", None)
+        if chat_template and hasattr(tokenizer, "apply_chat_template"):
+            try:
+                return tokenizer.apply_chat_template(
+                    messages,
+                    tokenize=False,
+                    add_generation_prompt=add_generation_prompt,
+                )
+            except Exception as e:
+                logger.warning(f"Chat template apply failed; using fallback format. Details: {e}")
+
+    prompt = ""
+    for msg in messages:
+        role = msg.get('role', 'user')
+        content = msg.get('content', '')
+        prompt += f"<|{role}|>\n{content}\n"
+    if add_generation_prompt:
+        prompt += "<|assistant|>\n"
+    return prompt
 
 
 def get_sgl_runtime(model_path_str: str, max_tokens: int, device_type: str):
@@ -531,13 +558,7 @@ def chat_completions():
                 model, tokenizer = _load_model_and_tokenizer(model_path, device_type)
                 model = model.to(torch.device('cuda' if device_type in ('cuda', 'rocm') else 'cpu'))
 
-                prompt = ""
-                for msg in messages:
-                    role = msg.get('role', 'user')
-                    content = msg.get('content', '')
-                    prompt += f"<|{role}|>\n{content}\n"
-                prompt += "<|assistant|>\n"
-
+                prompt = _build_chat_prompt(messages, tokenizer)
                 inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
                 max_new_tokens = _clamp_max_new_tokens(
                     tokenizer=tokenizer,
@@ -564,11 +585,12 @@ def chat_completions():
                         **generate_kwargs,
                     )
                 decoded = tokenizer.decode(outputs[0], skip_special_tokens=True)
-                response_text = decoded[len(prompt):] if decoded.startswith(prompt) else decoded
+                decoded_prompt = tokenizer.decode(inputs["input_ids"][0], skip_special_tokens=True)
+                response_text = decoded[len(decoded_prompt):] if decoded.startswith(decoded_prompt) else decoded
 
                 completion_timestamp = int(datetime.now().timestamp())
-                prompt_tokens = len(prompt.split())
-                completion_tokens = len(response_text.split())
+                prompt_tokens = int(inputs["input_ids"].shape[-1])
+                completion_tokens = int(outputs[0].shape[-1] - inputs["input_ids"].shape[-1])
                 return jsonify({
                     "id": f"chatcmpl-{completion_timestamp}",
                     "object": "chat.completion",
@@ -598,13 +620,13 @@ def chat_completions():
         # Format chat messages into a single prompt string suitable for the model
         # This might need adjustment based on the specific model's chat template
         # Using a generic approach here - consider AutoTokenizer.apply_chat_template if available/compatible
-        prompt = ""
-        # A simple generic template - replace with model-specific if possible
-        for msg in messages:
-            role = msg.get('role', 'user')
-            content = msg.get('content', '')
-            prompt += f"<|{role}|>\n{content}\n" # Example format
-        prompt += "<|assistant|>\n" # Prompt the model for assistant response
+        tokenizer = None
+        try:
+            tokenizer = _load_tokenizer(model_path)
+        except Exception as tokenizer_e:
+            logger.warning(f"Chat - Tokenizer load failed; using fallback prompt. Details: {tokenizer_e}")
+
+        prompt = _build_chat_prompt(messages, tokenizer)
 
         logger.info(f"Chat Request - Formatted Prompt (first 200 chars): {prompt[:200]}...")
 
@@ -649,8 +671,12 @@ def chat_completions():
         # Format response in OpenAI style
         completion_timestamp = int(datetime.now().timestamp())
         # Simple token count estimation (replace with precise method if needed)
-        prompt_tokens = len(prompt.split()) # Basic estimate
-        completion_tokens = len(response_text.split()) # Basic estimate
+        if tokenizer:
+            prompt_tokens = len(tokenizer(prompt).input_ids)
+            completion_tokens = len(tokenizer(response_text).input_ids)
+        else:
+            prompt_tokens = len(prompt.split())
+            completion_tokens = len(response_text.split())
 
         return jsonify({
             "id": f"chatcmpl-{completion_timestamp}",

@@ -94,21 +94,30 @@ def save_model():
         # Use a temporary directory for the copy operation
         temp_path = SAVED_MODELS_DIR / f"{safe_save_name}_temp"
         
-        if temp_path.exists():
-            shutil.rmtree(temp_path)
-            
         if target_path.exists():
             return jsonify({
                 "status": "error",
                 "message": f"A model with the name '{safe_save_name}' already exists"
             }), 409
+        
+        # Clean up any existing temp directory
+        if temp_path.exists():
+            shutil.rmtree(temp_path)
             
         # Copy to temp directory first
         try:
-            shutil.copytree(source_path, temp_path)
+            logger.info(f"Copying model from {source_path} to {temp_path}")
+            
+            def ignore_run_dirs(directory, contents):
+                return ['runs'] if 'runs' in contents else []
+            
+            shutil.copytree(source_path, temp_path, ignore=ignore_run_dirs, dirs_exist_ok=False)
+            logger.info(f"Copy completed successfully")
             
             # If successful, rename to final name
+            logger.info(f"Renaming {temp_path} to {target_path}")
             temp_path.rename(target_path)
+            logger.info(f"Rename completed successfully")
             
             # Create metadata file
             metadata = {

@@ -10,7 +10,6 @@ function Chat() {
     const [isLoading, setIsLoading] = useState(false);
     const [selectedBaseModel, setSelectedBaseModel] = useState('');
     const [selectedFineTunedModel, setSelectedFineTunedModel] = useState('');
-    const [useOpenAIFormat, setUseOpenAIFormat] = useState(true);
     const [systemPrompt, setSystemPrompt] = useState('');
     const [temperature, setTemperature] = useState(0.7);
     const [maxTokens, setMaxTokens] = useState(4096);
@@ -50,62 +49,33 @@ function Chat() {
         try {
             let response;
             
-            if (useOpenAIFormat) {
-                const systemMessage = systemPrompt.trim()
-                    ? [{ role: 'system', content: systemPrompt.trim() }]
-                    : [];
-                const requestBody = {
-                    model: activeModel,
-                    messages: [...systemMessage, ...messages, newMessage],
-                    temperature: temperature,
-                    max_tokens: maxTokens,
+            const systemMessage = systemPrompt.trim()
+                ? [{ role: 'system', content: systemPrompt.trim() }]
+                : [];
+            const requestBody = {
+                model: activeModel,
+                messages: [...systemMessage, ...messages, newMessage],
+                temperature: temperature,
+                max_tokens: maxTokens,
+            };
+
+            response = await api.post(
+                '/models/v1/chat/completions', 
+                requestBody
+            );
+            
+            console.log('Chat completions response:', response);
+            
+            if (response && response.choices && response.choices[0]?.message) {
+                const assistantMessage = {
+                    role: 'assistant',
+                    content: response.choices[0].message.content
                 };
-
-                response = await api.post(
-                    '/models/v1/chat/completions', 
-                    requestBody
-                );
-                
-                console.log('Chat completions response:', response);
-                
-                if (response && response.choices && response.choices[0]?.message) {
-                    const assistantMessage = {
-                        role: 'assistant',
-                        content: response.choices[0].message.content
-                    };
-                    setMessages(prev => [...prev, assistantMessage]);
-                } else if (response && response.error && response.error.message) {
-                    throw new Error(response.error.message);
-                } else {
-                    throw new Error('Failed to get response');
-                }
+                setMessages(prev => [...prev, assistantMessage]);
+            } else if (response && response.error && response.error.message) {
+                throw new Error(response.error.message);
             } else {
-                const requestBody = selectedFineTunedModel
-                    ? { saved_model_name: selectedFineTunedModel }
-                    : { model_id: selectedBaseModel };
-
-                requestBody.input = input;
-                requestBody.temperature = temperature;
-                requestBody.max_length = maxTokens;
-                requestBody.do_sample = true;
-                requestBody.top_p = 0.95;
-
-                response = await api.post(
-                    '/models/inference', 
-                    requestBody
-                );
-                
-                console.log('Standard inference response:', response);
-                
-                if (response && response.status === 'success' && response.response) {
-                    const assistantMessage = {
-                        role: 'assistant',
-                        content: response.response
-                    };
-                    setMessages(prev => [...prev, assistantMessage]);
-                } else {
-                    throw new Error(response.message || 'Failed to get response');
-                }
+                throw new Error('Failed to get response');
             }
         } catch (err) {
             console.error('Error during inference:', err);
@@ -141,17 +111,6 @@ function Chat() {
                 </div>
                 
                 <div className="chat-settings">
-                    <div className="setting-group">
-                        <label>
-                            <input
-                                type="checkbox"
-                                checked={useOpenAIFormat}
-                                onChange={(e) => setUseOpenAIFormat(e.target.checked)}
-                            />
-                            Use OpenAI Format
-                        </label>
-                    </div>
-
                     <div className="setting-group">
                         <label htmlFor="system-prompt">System Prompt (optional)</label>
                         <textarea
