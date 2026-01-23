@@ -64,6 +64,8 @@ def save_model():
         data = request.json
         model_id = data.get('model_id')
         save_name = data.get('save_name')
+        convert_to_gguf = data.get('convert_to_gguf', True)
+        overwrite = data.get('overwrite', False)
         
         if not model_id or not save_name:
             return jsonify({
@@ -97,10 +99,15 @@ def save_model():
         temp_path = SAVED_MODELS_DIR / f"{safe_save_name}_temp"
         
         if target_path.exists():
-            return jsonify({
-                "status": "error",
-                "message": f"A model with the name '{safe_save_name}' already exists"
-            }), 409
+            if not overwrite:
+                return jsonify({
+                    "status": "error",
+                    "message": f"A model with the name '{safe_save_name}' already exists",
+                    "requires_confirmation": True
+                }), 409
+            else:
+                logger.info(f"Overwriting existing model: {safe_save_name}")
+                shutil.rmtree(target_path)
         
         # Clean up any existing temp directory
         if temp_path.exists():
@@ -117,7 +124,7 @@ def save_model():
             logger.info(f"Copy completed successfully")
             
             gguf_output = temp_path / "model.gguf"
-            convert_model_to_gguf(temp_path, gguf_output, model_id)
+            convert_model_to_gguf(temp_path, gguf_output, model_id, skip_conversion=not convert_to_gguf)
 
             # If successful, rename to final name
             logger.info(f"Renaming {temp_path} to {target_path}")

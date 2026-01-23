@@ -51,6 +51,7 @@ function App() {
   const [isDeploying, setIsDeploying] = useState(false);
   const [isSavingOllamaConfig, setIsSavingOllamaConfig] = useState(false);
   const [isSavingModel, setIsSavingModel] = useState(false);
+  const [convertToGguf, setConvertToGguf] = useState(true);
 
   const getAuthHeaders = useCallback((extraHeaders = {}) => {
     const token = localStorage.getItem('adminToken');
@@ -621,13 +622,14 @@ function App() {
     }
   }, [selectedModel, trainingMethod, availableModels, getSelectedModelConfig]);
 
-  const handleSaveModel = async () => {
+  const handleSaveModel = async (overwrite = false) => {
     if (!saveName.trim()) {
       alert('Please enter a name for the saved model');
       return;
     }
 
     setIsSavingModel(true);
+    
     try {
       const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.save}`, {
         method: 'POST',
@@ -638,11 +640,24 @@ function App() {
         body: JSON.stringify({
           model_id: selectedModel,
           save_name: saveName,
-          description: 'Fine-tuned model'
+          description: 'Fine-tuned model',
+          convert_to_gguf: convertToGguf,
+          overwrite: overwrite
         }),
       });
 
       const data = await response.json();
+      
+      if (response.status === 409 && data.requires_confirmation) {
+        const confirmed = window.confirm(`${data.message}\n\nDo you want to overwrite the existing model?`);
+        
+        if (confirmed) {
+          return await handleSaveModel(true);
+        } else {
+          return;
+        }
+      }
+      
       if (data.status === 'success') {
         alert('Model saved successfully!');
         setShowSaveDialog(false);
@@ -665,7 +680,8 @@ function App() {
       }
     } catch (error) {
       console.error('Error saving model:', error);
-      alert('Error saving model');
+      const errorMessage = error.message || 'An error occurred while saving the model';
+      alert(`Error saving model: ${errorMessage}`);
     } finally {
       setIsSavingModel(false);
     }
@@ -1685,6 +1701,7 @@ function App() {
                       onClick={() => {
                         const baseModelName = selectedModel?.split('/').pop() || '';
                         setSaveName(baseModelName ? `${baseModelName}-finetuned` : '');
+                        setConvertToGguf(true);
                         setShowSaveDialog(true);
                       }}
                     >
@@ -1708,12 +1725,25 @@ function App() {
                             placeholder="e.g. gemma-7b-custom-v1"
                             autoFocus
                           />
+                          <div className="save-dialog-option">
+                            <label className="checkbox-label">
+                              <input
+                                type="checkbox"
+                                checked={convertToGguf}
+                                onChange={(e) => setConvertToGguf(e.target.checked)}
+                              />
+                              <span>Convert to GGUF format</span>
+                            </label>
+                            <p className="option-description">
+                              GGUF format is required for deployment to Ollama. Disable if you only need the HuggingFace format.
+                            </p>
+                          </div>
                           <div className="save-dialog-actions">
                             <button className="cancel-btn" onClick={() => {
                               setShowSaveDialog(false);
                               setSaveName('');
                             }} disabled={isSavingModel}>Cancel</button>
-                            <button className="confirm-btn" onClick={handleSaveModel} disabled={!saveName.trim() || isSavingModel}>
+                            <button className="confirm-btn" onClick={() => handleSaveModel(false)} disabled={!saveName.trim() || isSavingModel}>
                               {isSavingModel && (
                                 <svg className="spinner-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                   <circle cx="12" cy="12" r="10" opacity="0.25"></circle>

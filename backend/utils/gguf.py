@@ -44,7 +44,11 @@ def _merge_adapter_model(adapter_dir: Path, base_model_id: str, output_dir: Path
     tokenizer.save_pretrained(output_dir)
 
 
-def convert_model_to_gguf(model_dir: Path, output_path: Path, base_model_id: str | None) -> None:
+def convert_model_to_gguf(model_dir: Path, output_path: Path, base_model_id: str | None, skip_conversion: bool = False) -> None:
+    if skip_conversion:
+        logger.info("GGUF conversion skipped by user request")
+        return
+
     converter_path = _resolve_converter_path()
     if not converter_path:
         raise RuntimeError(
