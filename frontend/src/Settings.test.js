@@ -33,9 +33,11 @@ describe('Settings', () => {
     render(<Settings />);
 
     await waitFor(() => {
-      expect(screen.getByText('Token not configured')).toBeInTheDocument();
-      expect(screen.getByText('Admin token configured')).toBeInTheDocument();
+      screen.getByText('Token not configured');
+      screen.getByText('Admin token configured');
     });
+    expect(screen.getByText('Token not configured')).toBeInTheDocument();
+    expect(screen.getByText('Admin token configured')).toBeInTheDocument();
   });
 
   it('validates admin token input', async () => {
@@ -81,8 +83,8 @@ describe('Settings', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Save Admin Token' }));
 
     await waitFor(() => {
-      expect(localStorage.getItem('adminToken')).toBe('admin-token-123');
       expect(screen.getByText('Admin token saved')).toBeInTheDocument();
     });
+    expect(localStorage.getItem('adminToken')).toBe('admin-token-123');
   });
 });
