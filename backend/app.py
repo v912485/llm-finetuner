@@ -5,6 +5,7 @@ from config.settings import setup_logging
 import os
 from utils.auth import is_request_authenticated, is_admin_configured
 import re
+from werkzeug.exceptions import HTTPException
 
 app = Flask(__name__)
 
@@ -66,6 +67,11 @@ app.register_blueprint(settings_routes.bp)
 # Add global error handler
 @app.errorhandler(Exception)
 def handle_exception(e):
+    if isinstance(e, HTTPException):
+        return jsonify({
+            "status": "error",
+            "message": e.description
+        }), e.code
     logger.error(f"Unhandled exception: {str(e)}", exc_info=True)
     return jsonify({
         "status": "error",

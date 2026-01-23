@@ -107,7 +107,7 @@ class ModelManager:
                     model_id,
                     token=self.hf_token,
                     trust_remote_code=True,
-                    torch_dtype=torch.float32  # Start with float32 for compatibility
+                    dtype=torch.float32  # Start with float32 for compatibility
                 )
                 
                 # Save model and tokenizer with same parameters used for loading
@@ -191,7 +191,7 @@ class ModelManager:
                 base_model = AutoModelForCausalLM.from_pretrained(
                     base_model_path,
                     trust_remote_code=True,
-                    torch_dtype=torch.float32
+                    dtype=torch.float32
                 )
                 if PeftModel is None:
                     raise ValueError("PEFT library not installed; cannot load LoRA adapter.")
@@ -202,7 +202,7 @@ class ModelManager:
                     model_path,
                     device_map=None,
                     trust_remote_code=True,
-                    torch_dtype=torch.float32
+                    dtype=torch.float32
                 )
             
             # Move model to device

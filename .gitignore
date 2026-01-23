@@ -24,6 +24,7 @@ downloaded_models/
 saved_models/
 data/
 datasets/
+.venv/
 
 # Flask
 instance/

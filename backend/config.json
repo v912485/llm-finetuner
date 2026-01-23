@@ -160,6 +160,10 @@
     "rocm": "AMD ROCm",
     "cpu": "CPU Only"
   },
+  "ollama": {
+    "host": "http://localhost",
+    "port": 11434
+  },
   "training_methods": {
     "standard": {
       "name": "Full Fine-tuning",

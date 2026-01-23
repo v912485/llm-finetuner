@@ -31,6 +31,7 @@ function App() {
   const [isTraining, setIsTraining] = useState(false);
   const [dismissedTrainingError, setDismissedTrainingError] = useState(null);
   const [downloadedModels, setDownloadedModels] = useState([]);
+  const [savedModels, setSavedModels] = useState([]);
   const [downloadedDatasets, setDownloadedDatasets] = useState([]);
   const [trainingMethod, setTrainingMethod] = useState('standard');
   const [config, setConfig] = useState(null);
@@ -41,6 +42,15 @@ function App() {
   const [newModelId, setNewModelId] = useState('');
   const [newModelName, setNewModelName] = useState('');
   const [openDatasetMenuId, setOpenDatasetMenuId] = useState(null);
+  const [selectedSavedModel, setSelectedSavedModel] = useState('');
+  const [ollamaModelName, setOllamaModelName] = useState('');
+  const [ollamaHost, setOllamaHost] = useState('');
+  const [ollamaPort, setOllamaPort] = useState('');
+  const [ollamaStatus, setOllamaStatus] = useState('');
+  const [ollamaConfigStatus, setOllamaConfigStatus] = useState('');
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [isSavingOllamaConfig, setIsSavingOllamaConfig] = useState(false);
+  const [isSavingModel, setIsSavingModel] = useState(false);
 
   const getAuthHeaders = useCallback((extraHeaders = {}) => {
     const token = localStorage.getItem('adminToken');
@@ -95,6 +105,20 @@ function App() {
       }
     } catch (error) {
       console.error('Error fetching dataset configurations:', error);
+    }
+  }, [getAuthHeaders]);
+
+  const fetchSavedModels = useCallback(async () => {
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`, {
+        headers: getAuthHeaders()
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        setSavedModels(data.saved_models || []);
+      }
+    } catch (error) {
+      console.error('Error fetching saved models:', error);
     }
   }, [getAuthHeaders]);
 
@@ -156,6 +180,19 @@ function App() {
   }, [getAuthHeaders]);
 
   useEffect(() => {
+    if (config && config.ollama) {
+      setOllamaHost(config.ollama.host || '');
+      setOllamaPort(config.ollama.port !== undefined ? String(config.ollama.port) : '');
+    }
+  }, [config]);
+
+  useEffect(() => {
+    if (selectedSavedModel) {
+      setOllamaModelName(selectedSavedModel);
+    }
+  }, [selectedSavedModel]);
+
+  useEffect(() => {
     const updateAdminToken = () => {
       const nextToken = localStorage.getItem('adminToken') || '';
       setAdminToken(nextToken);
@@ -176,13 +213,15 @@ function App() {
         return;
       }
       try {
-        const [availableResponse, downloadedResponse] = await Promise.all([
+        const [availableResponse, downloadedResponse, savedResponse] = await Promise.all([
           fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.available}`, { headers: getAuthHeaders() }),
-          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`, { headers: getAuthHeaders() })
+          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.downloaded}`, { headers: getAuthHeaders() }),
+          fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`, { headers: getAuthHeaders() })
         ]);
 
         const availableData = await availableResponse.json();
         const downloadedData = await downloadedResponse.json();
+        const savedData = await savedResponse.json();
 
         if (!availableResponse.ok) {
           console.error('Error fetching available models:', availableData);
@@ -199,6 +238,10 @@ function App() {
         if (downloadedData.status === 'success') {
           setDownloadedModels(downloadedData.downloaded_models);
           console.log('Downloaded models:', downloadedData.downloaded_models);
+        }
+
+        if (savedData.status === 'success') {
+          setSavedModels(savedData.saved_models || []);
         }
         
         // Clear selected model if it's not in the downloaded models
@@ -584,6 +627,7 @@ function App() {
       return;
     }
 
+    setIsSavingModel(true);
     try {
       const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.training.save}`, {
         method: 'POST',
@@ -604,7 +648,6 @@ function App() {
         setShowSaveDialog(false);
         setSaveName('');
         
-        // Fetch saved models to update the dropdown
         try {
           const savedResponse = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.saved}`, {
             headers: getAuthHeaders()
@@ -612,6 +655,7 @@ function App() {
           const savedData = await savedResponse.json();
           if (savedData.status === 'success') {
             console.log('Updated saved models:', savedData.saved_models);
+            setSavedModels(savedData.saved_models || []);
           }
         } catch (error) {
           console.error('Error fetching saved models after save:', error);
@@ -622,6 +666,89 @@ function App() {
     } catch (error) {
       console.error('Error saving model:', error);
       alert('Error saving model');
+    } finally {
+      setIsSavingModel(false);
+    }
+  };
+
+  const handleSaveOllamaConfig = async () => {
+    if (!ollamaHost.trim()) {
+      setOllamaConfigStatus('Ollama host is required');
+      return;
+    }
+    const portValue = parseInt(ollamaPort, 10);
+    if (!Number.isInteger(portValue) || portValue <= 0) {
+      setOllamaConfigStatus('Ollama port must be a valid number');
+      return;
+    }
+    setIsSavingOllamaConfig(true);
+    setOllamaConfigStatus('');
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.config}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({
+          ollama: {
+            host: ollamaHost.trim(),
+            port: portValue
+          }
+        })
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        setConfig(prev => ({ ...(prev || {}), ollama: data.ollama }));
+        setOllamaConfigStatus('Ollama settings saved');
+      } else {
+        setOllamaConfigStatus(data.message || 'Failed to save Ollama settings');
+      }
+    } catch (error) {
+      console.error('Error saving Ollama settings:', error);
+      setOllamaConfigStatus('Failed to save Ollama settings');
+    } finally {
+      setIsSavingOllamaConfig(false);
+    }
+  };
+
+  const handleDeployToOllama = async () => {
+    if (!selectedSavedModel) {
+      setOllamaStatus('Select a saved model to deploy');
+      return;
+    }
+    setIsDeploying(true);
+    setOllamaStatus('');
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.ollamaDeploy}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({
+          saved_model_name: selectedSavedModel,
+          ollama_model_name: (ollamaModelName || selectedSavedModel).trim()
+        })
+      });
+      const data = await response.json();
+      if (data.status === 'success') {
+        setOllamaStatus('Model deployed to Ollama');
+      } else {
+        const detail = data.details
+          ? (typeof data.details === 'string' ? data.details : JSON.stringify(data.details))
+          : '';
+        setOllamaStatus(
+          detail
+            ? `${data.message || 'Ollama deploy failed'}: ${detail}`
+            : (data.message || 'Ollama deploy failed')
+        );
+      }
+    } catch (error) {
+      console.error('Error deploying to Ollama:', error);
+      setOllamaStatus('Ollama deploy failed');
+    } finally {
+      setIsDeploying(false);
     }
   };
 
@@ -728,6 +855,61 @@ function App() {
     }
   };
 
+  const handleDeleteSavedModel = async (modelName) => {
+    if (!window.confirm('Are you sure you want to delete this saved model?')) return;
+
+    try {
+      const encodedName = encodeURIComponent(modelName);
+      const response = await fetch(
+        `${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.savedDelete}/${encodedName}`,
+        { method: 'DELETE', headers: getAuthHeaders() }
+      );
+      const data = await response.json();
+      if (data.status === 'success') {
+        setSavedModels(prev => prev.filter(model => model.name !== modelName));
+        setSelectedSavedModel(prev => (prev === modelName ? '' : prev));
+      } else {
+        alert(data.message || 'Failed to delete saved model');
+      }
+    } catch (error) {
+      console.error('Error deleting saved model:', error);
+      alert('Error deleting saved model');
+    }
+  };
+
+  const handleRenameSavedModel = async (model) => {
+    const nextName = window.prompt('Enter a new saved model name', model.name);
+    if (!nextName || nextName.trim() === model.name) return;
+
+    try {
+      const encodedName = encodeURIComponent(model.name);
+      const response = await fetch(
+        `${apiConfig.apiBaseUrl}${apiConfig.endpoints.models.savedRename}/${encodedName}/rename`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            ...getAuthHeaders()
+          },
+          body: JSON.stringify({ name: nextName.trim() })
+        }
+      );
+      const data = await response.json();
+      if (data.status === 'success') {
+        const updated = data.saved_model || { ...model, name: nextName.trim() };
+        setSavedModels(prev => prev.map(item => (
+          item.name === model.name ? updated : item
+        )));
+        setSelectedSavedModel(prev => (prev === model.name ? updated.name : prev));
+      } else {
+        alert(data.message || 'Failed to rename saved model');
+      }
+    } catch (error) {
+      console.error('Error renaming saved model:', error);
+      alert('Error renaming saved model');
+    }
+  };
+
   const handleDatasetDelete = async (datasetId) => {
     if (!window.confirm('Are you sure you want to delete this dataset?')) return;
 
@@ -826,11 +1008,151 @@ function App() {
         <nav className="app-nav">
           <Link to="/">Home</Link>
           <Link to="/chat">Chat</Link>
+          <Link to="/deploy">Deploy</Link>
           <Link to="/settings">Settings</Link>
         </nav>
 
         <Routes>
           <Route path="/chat" element={<Chat />} />
+          <Route path="/deploy" element={
+            <>
+              <h1>Deploy to Ollama</h1>
+              <section className="ollama-deploy-section">
+                <div className="ollama-deploy-container">
+                  <div className="ollama-deploy-header">
+                    <h4>Ollama Connection</h4>
+                    <button
+                      type="button"
+                      className="ollama-refresh-button"
+                      onClick={fetchSavedModels}
+                    >
+                      Refresh
+                    </button>
+                  </div>
+
+                  <div className="ollama-config-row">
+                    <div className="ollama-field">
+                      <label>Host</label>
+                      <input
+                        type="text"
+                        value={ollamaHost}
+                        onChange={(e) => setOllamaHost(e.target.value)}
+                        placeholder="http://localhost"
+                      />
+                    </div>
+                    <div className="ollama-field">
+                      <label>Port</label>
+                      <input
+                        type="number"
+                        value={ollamaPort}
+                        onChange={(e) => setOllamaPort(e.target.value)}
+                        placeholder="11434"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className="ollama-save-button"
+                      onClick={handleSaveOllamaConfig}
+                      disabled={isSavingOllamaConfig}
+                    >
+                      {isSavingOllamaConfig ? 'Saving...' : 'Save'}
+                    </button>
+                  </div>
+
+                  {ollamaConfigStatus && (
+                    <div className={`ollama-status ${ollamaConfigStatus.includes('Failed') || ollamaConfigStatus.includes('required') ? 'error' : 'success'}`}>
+                      {ollamaConfigStatus}
+                    </div>
+                  )}
+
+                  {savedModels.length > 0 ? (
+                    <div className="ollama-deploy-row">
+                      <div className="ollama-field">
+                        <label>Saved Model</label>
+                        <select
+                          value={selectedSavedModel}
+                          onChange={(e) => setSelectedSavedModel(e.target.value)}
+                        >
+                          <option value="">-- Select --</option>
+                          {savedModels.map(model => (
+                            <option key={model.name} value={model.name}>
+                              {model.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className="ollama-field">
+                        <label>Ollama Model Name</label>
+                        <input
+                          type="text"
+                          value={ollamaModelName}
+                          onChange={(e) => setOllamaModelName(e.target.value)}
+                          placeholder="e.g. my-model"
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="ollama-deploy-button"
+                        onClick={handleDeployToOllama}
+                        disabled={isDeploying || !selectedSavedModel}
+                      >
+                        {isDeploying ? 'Deploying...' : 'Deploy'}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="ollama-empty">No saved models available.</div>
+                  )}
+
+                  {savedModels.length > 0 && (
+                    <div className="saved-models-panel">
+                      <div className="saved-models-header">
+                        <h4>Saved Models</h4>
+                      </div>
+                      <div className="saved-models-list">
+                        {savedModels.map(model => (
+                          <div className="saved-model-row" key={model.name}>
+                            <div className="saved-model-details">
+                              <span className="saved-model-name">{model.name}</span>
+                              {model.original_model && (
+                                <span className="saved-model-origin">{model.original_model}</span>
+                              )}
+                              {model.saved_date && (
+                                <span className="saved-model-date">
+                                  {new Date(model.saved_date).toLocaleString()}
+                                </span>
+                              )}
+                            </div>
+                            <div className="saved-model-actions">
+                              <button
+                                type="button"
+                                className="saved-model-rename"
+                                onClick={() => handleRenameSavedModel(model)}
+                              >
+                                Rename
+                              </button>
+                              <button
+                                type="button"
+                                className="saved-model-delete"
+                                onClick={() => handleDeleteSavedModel(model.name)}
+                              >
+                                Delete
+                              </button>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {ollamaStatus && (
+                    <div className={`ollama-status ${ollamaStatus.includes('failed') || ollamaStatus.includes('Select') ? 'error' : 'success'}`}>
+                      {ollamaStatus}
+                    </div>
+                  )}
+                </div>
+              </section>
+            </>
+          } />
           <Route path="/" element={
             <>
               <h1>LLM Fine-tuning Interface</h1>
@@ -1390,9 +1712,15 @@ function App() {
                             <button className="cancel-btn" onClick={() => {
                               setShowSaveDialog(false);
                               setSaveName('');
-                            }}>Cancel</button>
-                            <button className="confirm-btn" onClick={handleSaveModel} disabled={!saveName.trim()}>
-                              Save Weights
+                            }} disabled={isSavingModel}>Cancel</button>
+                            <button className="confirm-btn" onClick={handleSaveModel} disabled={!saveName.trim() || isSavingModel}>
+                              {isSavingModel && (
+                                <svg className="spinner-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <circle cx="12" cy="12" r="10" opacity="0.25"></circle>
+                                  <path d="M12 2a10 10 0 0 1 10 10"></path>
+                                </svg>
+                              )}
+                              {isSavingModel ? 'Saving...' : 'Save Weights'}
                             </button>
                           </div>
                         </div>
@@ -1400,6 +1728,7 @@ function App() {
                     )}
                   </div>
                 )}
+
               </section>
             </>
           } />

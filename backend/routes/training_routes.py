@@ -1,5 +1,6 @@
 from flask import Blueprint, jsonify, request
 from training.trainer_instance import trainer
+from utils.gguf import convert_model_to_gguf
 import logging
 import json
 from datetime import datetime
@@ -90,7 +91,7 @@ def save_model():
             }), 404
             
         # Create saved models directory
-        SAVED_MODELS_DIR.mkdir(exist_ok=True)
+        SAVED_MODELS_DIR.mkdir(parents=True, exist_ok=True)
         
         # Use a temporary directory for the copy operation
         temp_path = SAVED_MODELS_DIR / f"{safe_save_name}_temp"
@@ -115,6 +116,9 @@ def save_model():
             shutil.copytree(source_path, temp_path, ignore=ignore_run_dirs, dirs_exist_ok=False)
             logger.info(f"Copy completed successfully")
             
+            gguf_output = temp_path / "model.gguf"
+            convert_model_to_gguf(temp_path, gguf_output, model_id)
+
             # If successful, rename to final name
             logger.info(f"Renaming {temp_path} to {target_path}")
             temp_path.rename(target_path)

@@ -14,5 +14,7 @@ sentencepiece
 scikit-learn
 tqdm
 evaluate
+absl-py
+nltk
 
 pytest

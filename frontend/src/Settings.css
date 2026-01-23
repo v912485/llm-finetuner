@@ -11,6 +11,10 @@
   background: #f8f9fa;
 }
 
+.settings-section + .settings-section {
+  margin-top: 16px;
+}
+
 .settings-description {
   color: #495057;
   margin-bottom: 16px;

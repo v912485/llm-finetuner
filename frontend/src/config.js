@@ -7,11 +7,14 @@ const apiConfig = {
       download: '/models/download',
       inference: '/models/inference',
       saved: '/models/saved',
+      ollamaDeploy: '/models/ollama/deploy',
       cancelTraining: '/models/cancel-training',
       chatCompletions: '/models/v1/chat/completions',
       add: '/models/add',
       delete: '/models/delete',
-      deleteDownloaded: '/models/downloaded'
+      deleteDownloaded: '/models/downloaded',
+      savedDelete: '/models/saved',
+      savedRename: '/models/saved'
     },
     datasets: {
       prepare: '/datasets/prepare',
@@ -32,7 +35,8 @@ const apiConfig = {
     settings: {
       huggingfaceToken: '/settings/huggingface_token',
       adminToken: '/settings/admin_token',
-      config: '/settings/config'
+      config: '/settings/config',
+      ggufConfig: '/settings/gguf_config'
     }
   }
 };

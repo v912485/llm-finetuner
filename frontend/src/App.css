@@ -899,6 +899,190 @@ input[type="file"] {
   box-shadow: 0 10px 15px -3px rgba(139, 92, 246, 0.3);
 }
 
+/* Ollama Deploy Section */
+.ollama-deploy-container {
+  margin-top: 2rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1.5rem;
+}
+
+.ollama-deploy-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+}
+
+.ollama-deploy-header h4 {
+  margin: 0;
+  font-size: 1rem;
+  color: #1e293b;
+}
+
+.ollama-config-row,
+.ollama-deploy-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  align-items: flex-end;
+}
+
+.ollama-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 180px;
+  flex: 1;
+}
+
+.ollama-field label {
+  font-size: 0.85rem;
+  color: #475569;
+}
+
+.ollama-field input,
+.ollama-field select {
+  padding: 0.6rem 0.75rem;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  background: white;
+}
+
+.ollama-refresh-button,
+.ollama-save-button,
+.ollama-deploy-button {
+  padding: 0.6rem 1.1rem;
+  border-radius: 8px;
+  border: none;
+  background: #2563eb;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.ollama-refresh-button {
+  background: #0f172a;
+}
+
+.ollama-save-button {
+  background: #16a34a;
+}
+
+.ollama-deploy-button {
+  background: #6366f1;
+}
+
+.ollama-refresh-button:disabled,
+.ollama-save-button:disabled,
+.ollama-deploy-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.ollama-status {
+  margin-top: 0.75rem;
+  font-size: 0.9rem;
+}
+
+.ollama-status.success {
+  color: #16a34a;
+}
+
+.ollama-status.error {
+  color: #dc2626;
+}
+
+.ollama-empty {
+  margin-top: 0.5rem;
+  color: #64748b;
+}
+
+.saved-models-panel {
+  margin-top: 1.25rem;
+  background: white;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  padding: 1rem;
+}
+
+.saved-models-header h4 {
+  margin: 0 0 0.75rem 0;
+  font-size: 1rem;
+  color: #1e293b;
+}
+
+.saved-models-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+
+.saved-model-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.75rem;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.saved-model-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.saved-model-name {
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.saved-model-origin,
+.saved-model-date {
+  font-size: 0.85rem;
+  color: #64748b;
+}
+
+.saved-model-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.saved-model-rename,
+.saved-model-delete {
+  padding: 0.4rem 0.75rem;
+  border-radius: 6px;
+  border: none;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 0.85rem;
+  transition: background 0.2s ease;
+}
+
+.saved-model-rename {
+  background: #4f46e5;
+  color: white;
+}
+
+.saved-model-rename:hover {
+  background: #4338ca;
+}
+
+.saved-model-delete {
+  background: #dc2626;
+  color: white;
+}
+
+.saved-model-delete:hover {
+  background: #b91c1c;
+}
+
 /* Save Dialog Overlay */
 .save-dialog-overlay {
   position: fixed;
@@ -991,9 +1175,36 @@ input[type="file"] {
   cursor: not-allowed;
 }
 
+.confirm-btn:disabled:not(:hover) {
+  position: relative;
+}
+
+.save-dialog-actions button:disabled {
+  opacity: 0.7;
+}
+
+.spinner-icon {
+  animation: spin 1s linear infinite;
+  margin-right: 0.5rem;
+  display: inline-block;
+  vertical-align: middle;
+}
+
+.confirm-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+}
+
 @keyframes fade-in {
   from { opacity: 0; transform: scale(0.95); }
   to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 
 .model-card.downloaded {

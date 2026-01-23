@@ -9,6 +9,11 @@ function Settings() {
   const [adminToken, setAdminToken] = useState('');
   const [adminConfigured, setAdminConfigured] = useState(false);
   const [adminSaveStatus, setAdminSaveStatus] = useState('');
+  const [llamaCppDir, setLlamaCppDir] = useState('');
+  const [ggufConverterPath, setGgufConverterPath] = useState('');
+  const [ggufOuttype, setGgufOuttype] = useState('f16');
+  const [ggufConfigured, setGgufConfigured] = useState(false);
+  const [ggufSaveStatus, setGgufSaveStatus] = useState('');
 
   const getAuthHeaders = () => {
     const token = localStorage.getItem('adminToken');
@@ -36,6 +41,22 @@ function Settings() {
       .catch(error => console.error('Error fetching admin token status:', error));
   }, []);
 
+  useEffect(() => {
+    fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.ggufConfig}`, {
+      headers: getAuthHeaders()
+    })
+      .then(res => res.json())
+      .then(data => {
+        if (data.status === 'success') {
+          setLlamaCppDir(data.llama_cpp_dir || '');
+          setGgufConverterPath(data.gguf_converter_path || '');
+          setGgufOuttype(data.gguf_outtype || 'f16');
+          setGgufConfigured(Boolean(data.llama_cpp_dir || data.gguf_converter_path));
+        }
+      })
+      .catch(error => console.error('Error fetching GGUF config:', error));
+  }, []);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     try {
@@ -54,6 +75,40 @@ function Settings() {
       setTimeout(() => setSaveStatus(''), 3000);
     } catch (error) {
       setSaveStatus('Error saving token');
+      console.error('Error:', error);
+    }
+  };
+
+  const handleGgufSubmit = async (e) => {
+    e.preventDefault();
+    try {
+      const response = await fetch(`${apiConfig.apiBaseUrl}${apiConfig.endpoints.settings.ggufConfig}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify({
+          llama_cpp_dir: llamaCppDir,
+          gguf_converter_path: ggufConverterPath,
+          gguf_outtype: ggufOuttype
+        })
+      });
+
+      const data = await response.json();
+      if (data.status === 'success') {
+        setLlamaCppDir(data.llama_cpp_dir || '');
+        setGgufConverterPath(data.gguf_converter_path || '');
+        setGgufOuttype(data.gguf_outtype || 'f16');
+        setGgufConfigured(Boolean(data.llama_cpp_dir || data.gguf_converter_path));
+        setGgufSaveStatus('GGUF settings saved');
+      } else {
+        setGgufSaveStatus(data.message || 'Error saving GGUF settings');
+      }
+
+      setTimeout(() => setGgufSaveStatus(''), 3000);
+    } catch (error) {
+      setGgufSaveStatus('Error saving GGUF settings');
       console.error('Error:', error);
     }
   };
@@ -159,6 +214,53 @@ function Settings() {
           {saveStatus && (
             <div className={`save-status ${saveStatus.includes('Error') ? 'error' : 'success'}`}>
               {saveStatus}
+            </div>
+          )}
+        </form>
+      </div>
+
+      <div className="settings-section">
+        <h3>GGUF Conversion</h3>
+        <p className="settings-description">
+          Configure llama.cpp conversion for saved models. Provide either a llama.cpp directory
+          or a direct path to the conversion script. Output type defaults to f16.
+        </p>
+
+        <form onSubmit={handleGgufSubmit} className="settings-form">
+          <div className="form-group">
+            <input
+              type="text"
+              value={llamaCppDir}
+              onChange={(e) => setLlamaCppDir(e.target.value)}
+              placeholder="LLAMA_CPP_DIR (e.g. /opt/llama.cpp)"
+              className="api-key-input"
+            />
+            <input
+              type="text"
+              value={ggufConverterPath}
+              onChange={(e) => setGgufConverterPath(e.target.value)}
+              placeholder="GGUF_CONVERTER_PATH (e.g. /opt/llama.cpp/convert_hf_to_gguf.py)"
+              className="api-key-input"
+            />
+            <input
+              type="text"
+              value={ggufOuttype}
+              onChange={(e) => setGgufOuttype(e.target.value)}
+              placeholder="GGUF_OUTTYPE (e.g. f16, q8_0, Q4_K_M)"
+              className="api-key-input"
+            />
+            <div className={`save-status ${ggufConfigured ? 'success' : 'error'}`}>
+              {ggufConfigured ? 'GGUF conversion configured' : 'GGUF conversion not configured'}
+            </div>
+          </div>
+
+          <button type="submit" className="save-button">
+            Save GGUF Settings
+          </button>
+
+          {ggufSaveStatus && (
+            <div className={`save-status ${ggufSaveStatus.includes('Error') ? 'error' : 'success'}`}>
+              {ggufSaveStatus}
             </div>
           )}
         </form>

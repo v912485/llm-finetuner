@@ -283,6 +283,12 @@ class Trainer:
         logger.info(f"Selected target modules {modules} for model {model_id}")
 
         if use_qlora:
+            if self.is_rocm:
+                raise RuntimeError("QLoRA requires bitsandbytes with CUDA; ROCm is not supported. Use LoRA instead.")
+            try:
+                importlib.metadata.version("bitsandbytes")
+            except importlib.metadata.PackageNotFoundError as exc:
+                raise RuntimeError("bitsandbytes is not installed; QLoRA is unavailable. Install bitsandbytes or use LoRA.") from exc
             bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_use_double_quant=True,

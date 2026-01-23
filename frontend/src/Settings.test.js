@@ -20,7 +20,15 @@ describe('Settings', () => {
   it('shows configured status based on server responses', async () => {
     global.fetch
       .mockResolvedValueOnce(mockFetchResponse({ configured: false }))
-      .mockResolvedValueOnce(mockFetchResponse({ configured: true }));
+      .mockResolvedValueOnce(mockFetchResponse({ configured: true }))
+      .mockResolvedValueOnce(
+        mockFetchResponse({
+          status: 'success',
+          llama_cpp_dir: '',
+          gguf_converter_path: '',
+          gguf_outtype: 'f16'
+        })
+      );
 
     render(<Settings />);
 
@@ -33,7 +41,15 @@ describe('Settings', () => {
   it('validates admin token input', async () => {
     global.fetch
       .mockResolvedValueOnce(mockFetchResponse({ configured: false }))
-      .mockResolvedValueOnce(mockFetchResponse({ configured: false }));
+      .mockResolvedValueOnce(mockFetchResponse({ configured: false }))
+      .mockResolvedValueOnce(
+        mockFetchResponse({
+          status: 'success',
+          llama_cpp_dir: '',
+          gguf_converter_path: '',
+          gguf_outtype: 'f16'
+        })
+      );
 
     render(<Settings />);
 
@@ -46,6 +62,14 @@ describe('Settings', () => {
     global.fetch
       .mockResolvedValueOnce(mockFetchResponse({ configured: false }))
       .mockResolvedValueOnce(mockFetchResponse({ configured: false }))
+      .mockResolvedValueOnce(
+        mockFetchResponse({
+          status: 'success',
+          llama_cpp_dir: '',
+          gguf_converter_path: '',
+          gguf_outtype: 'f16'
+        })
+      )
       .mockResolvedValueOnce(mockFetchResponse({ status: 'success' }));
 
     render(<Settings />);

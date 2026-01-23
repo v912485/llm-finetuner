@@ -11,6 +11,9 @@ import torch
 import json
 from datetime import datetime
 from pathlib import Path
+import os
+from urllib.parse import urlparse
+import hashlib
 import shutil
 from huggingface_hub import model_info
 import requests
@@ -83,6 +86,102 @@ def _sanitize_saved_model_name(name: str) -> str:
     return safe
 
 
+def _load_app_config() -> dict:
+    config_path = Path(__file__).parent.parent / "config.json"
+    if not config_path.exists():
+        return {}
+    with open(config_path, "r") as f:
+        return json.load(f)
+
+
+def _get_ollama_base_url() -> str:
+    env_host = os.getenv("OLLAMA_HOST")
+    env_port = os.getenv("OLLAMA_PORT")
+    config = _load_app_config()
+    ollama_cfg = config.get("ollama", {}) if isinstance(config, dict) else {}
+    host = (env_host or ollama_cfg.get("host") or "http://localhost").strip()
+    port = env_port or ollama_cfg.get("port") or 11434
+
+    parsed = urlparse(host if "://" in host else f"http://{host}")
+    netloc = parsed.netloc or parsed.path
+    scheme = parsed.scheme or "http"
+    hostname = parsed.hostname or netloc
+    port_in_host = parsed.port is not None
+    if not hostname:
+        hostname = "localhost"
+    if port_in_host:
+        base = f"{scheme}://{hostname}:{parsed.port}"
+    else:
+        base = f"{scheme}://{hostname}:{int(port)}"
+    return base.rstrip("/")
+
+
+def _find_gguf_files(model_dir: Path) -> list[Path]:
+    return [path for path in model_dir.rglob("*.gguf") if path.is_file()]
+
+
+def _sha256_file(path: Path, chunk_size: int = 1024 * 1024) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(chunk_size)
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _upload_ollama_blob(ollama_base: str, gguf_path: Path) -> str:
+    digest = _sha256_file(gguf_path)
+    blob_ref = f"sha256:{digest}"
+    blob_url = f"{ollama_base}/api/blobs/{blob_ref}"
+    try:
+        head = requests.head(blob_url, timeout=30)
+    except requests.RequestException as req_err:
+        raise RuntimeError(f"Ollama blob check failed: {req_err}") from req_err
+
+    if head.status_code == 404:
+        try:
+            with open(gguf_path, "rb") as f:
+                upload = requests.post(
+                    blob_url,
+                    data=f,
+                    headers={"Content-Type": "application/octet-stream"},
+                    timeout=600
+                )
+        except requests.RequestException as req_err:
+            raise RuntimeError(f"Ollama blob upload failed: {req_err}") from req_err
+        if not upload.ok:
+            raise RuntimeError(f"Ollama blob upload failed ({upload.status_code})")
+    elif not head.ok:
+        raise RuntimeError(f"Ollama blob check failed ({head.status_code})")
+
+    return blob_ref
+
+
+def _build_saved_model_entry(model_dir: Path) -> dict:
+    metadata = {}
+    metadata_path = model_dir / 'metadata.json'
+    if metadata_path.exists():
+        try:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+        except Exception as e:
+            logger.error(f"Error reading metadata for {model_dir}: {str(e)}")
+            metadata = {}
+
+    saved_date = metadata.get('saved_date', '')
+    if not saved_date:
+        saved_date = metadata.get('save_date', '')
+
+    return {
+        'name': model_dir.name,
+        'original_model': metadata.get('original_model', ''),
+        'saved_date': saved_date,
+        'description': metadata.get('description', '')
+    }
+
+
 def _resolve_base_model_path(model_path: Path) -> tuple[Path, bool]:
     is_peft = (model_path / "adapter_config.json").exists()
     if not is_peft:
@@ -129,7 +228,7 @@ def _load_model_and_tokenizer(model_path: Path, device_type: str):
         base_model = AutoModelForCausalLM.from_pretrained(
             base_model_path,
             trust_remote_code=True,
-            torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
+            dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
         )
         if PeftModel is None:
             raise ValueError("PEFT library not installed; cannot load LoRA adapter.")
@@ -141,7 +240,7 @@ def _load_model_and_tokenizer(model_path: Path, device_type: str):
     model = AutoModelForCausalLM.from_pretrained(
         base_model_path,
         trust_remote_code=True,
-        torch_dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
+        dtype=torch.float16 if device_type in ('cuda', 'rocm') else torch.float32,
     )
     return model, tokenizer
 
@@ -435,24 +534,7 @@ def get_saved_models():
         if SAVED_MODELS_DIR.exists():
             for model_dir in SAVED_MODELS_DIR.iterdir():
                 if model_dir.is_dir():
-                    metadata_path = model_dir / 'metadata.json'
-                    if metadata_path.exists():
-                        try:
-                            with open(metadata_path, 'r') as f:
-                                metadata = json.load(f)
-                                # Handle both old and new metadata formats
-                                saved_date = metadata.get('saved_date', '')
-                                if not saved_date:
-                                    saved_date = metadata.get('save_date', '')
-                                
-                                saved_models.append({
-                                    'name': model_dir.name,
-                                    'original_model': metadata.get('original_model', ''),
-                                    'saved_date': saved_date,
-                                    'description': metadata.get('description', '')
-                                })
-                        except Exception as e:
-                            logger.error(f"Error reading metadata for {model_dir}: {str(e)}")
+                    saved_models.append(_build_saved_model_entry(model_dir))
         
         logger.info(f"Found {len(saved_models)} saved models")
         return jsonify({
@@ -466,6 +548,209 @@ def get_saved_models():
             "status": "error",
             "message": str(e)
         }), 500 
+
+
+@bp.route('/saved/<saved_model_name>', methods=['DELETE'])
+def delete_saved_model(saved_model_name):
+    try:
+        try:
+            safe_saved_model_name = _sanitize_saved_model_name(saved_model_name)
+        except ValueError as ve:
+            return jsonify({"status": "error", "message": str(ve)}), 400
+
+        saved_model_path = (SAVED_MODELS_DIR / safe_saved_model_name).resolve()
+        base_dir = SAVED_MODELS_DIR.resolve()
+        if base_dir not in saved_model_path.parents and saved_model_path != base_dir:
+            return jsonify({"status": "error", "message": "Invalid saved model path"}), 400
+
+        if not saved_model_path.exists():
+            return jsonify({"status": "error", "message": "Saved model not found"}), 404
+
+        if not saved_model_path.is_dir():
+            return jsonify({"status": "error", "message": "Saved model path is not a directory"}), 400
+
+        shutil.rmtree(saved_model_path)
+        sgl_runtime_cache.pop(str(saved_model_path), None)
+        logger.info(f"Deleted saved model files at {saved_model_path}")
+        return jsonify({
+            "status": "success",
+            "message": "Saved model deleted"
+        })
+    except Exception as e:
+        logger.error(f"Error deleting saved model: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@bp.route('/saved/<saved_model_name>/rename', methods=['PATCH'])
+def rename_saved_model(saved_model_name):
+    try:
+        data = request.json or {}
+        new_name = data.get('name')
+        if not new_name:
+            return jsonify({"status": "error", "message": "New name is required"}), 400
+
+        try:
+            safe_saved_model_name = _sanitize_saved_model_name(saved_model_name)
+            safe_new_name = _sanitize_saved_model_name(new_name)
+        except ValueError as ve:
+            return jsonify({"status": "error", "message": str(ve)}), 400
+
+        if safe_saved_model_name == safe_new_name:
+            return jsonify({"status": "error", "message": "New name must be different"}), 400
+
+        saved_model_path = (SAVED_MODELS_DIR / safe_saved_model_name).resolve()
+        target_path = (SAVED_MODELS_DIR / safe_new_name).resolve()
+        base_dir = SAVED_MODELS_DIR.resolve()
+        if base_dir not in saved_model_path.parents and saved_model_path != base_dir:
+            return jsonify({"status": "error", "message": "Invalid saved model path"}), 400
+        if base_dir not in target_path.parents and target_path != base_dir:
+            return jsonify({"status": "error", "message": "Invalid target model path"}), 400
+
+        if not saved_model_path.exists() or not saved_model_path.is_dir():
+            return jsonify({"status": "error", "message": "Saved model not found"}), 404
+        if target_path.exists():
+            return jsonify({"status": "error", "message": "A saved model with that name already exists"}), 409
+
+        saved_model_path.rename(target_path)
+        sgl_runtime_cache.pop(str(saved_model_path), None)
+        updated_entry = _build_saved_model_entry(target_path)
+        return jsonify({
+            "status": "success",
+            "message": "Saved model renamed",
+            "saved_model": updated_entry
+        })
+    except Exception as e:
+        logger.error(f"Error renaming saved model: {str(e)}")
+        return jsonify({
+            "status": "error",
+            "message": str(e)
+        }), 500
+
+
+@bp.route('/ollama/deploy', methods=['POST'])
+def deploy_to_ollama():
+    try:
+        data = request.json or {}
+        saved_model_name = data.get("saved_model_name")
+        ollama_model_name = (data.get("ollama_model_name") or saved_model_name or "").strip()
+        if not saved_model_name:
+            return jsonify({"status": "error", "message": "saved_model_name is required"}), 400
+        if not ollama_model_name:
+            return jsonify({"status": "error", "message": "ollama_model_name is required"}), 400
+
+        try:
+            safe_saved_model_name = _sanitize_saved_model_name(saved_model_name)
+        except ValueError as ve:
+            return jsonify({"status": "error", "message": str(ve)}), 400
+
+        saved_model_path = (SAVED_MODELS_DIR / safe_saved_model_name).resolve()
+        base_dir = SAVED_MODELS_DIR.resolve()
+        if base_dir not in saved_model_path.parents and saved_model_path != base_dir:
+            return jsonify({"status": "error", "message": "Invalid saved model path"}), 400
+        if not saved_model_path.exists() or not saved_model_path.is_dir():
+            return jsonify({"status": "error", "message": "Saved model not found"}), 404
+
+        gguf_files = _find_gguf_files(saved_model_path)
+        if not gguf_files:
+            return jsonify({"status": "error", "message": "No GGUF file found in saved model"}), 404
+        if len(gguf_files) > 1:
+            candidates = [str(path.relative_to(saved_model_path)) for path in gguf_files]
+            return jsonify({
+                "status": "error",
+                "message": "Multiple GGUF files found; please keep only one",
+                "candidates": candidates
+            }), 409
+
+        gguf_path = gguf_files[0]
+        ollama_base = _get_ollama_base_url()
+        try:
+            blob_ref = _upload_ollama_blob(ollama_base, gguf_path)
+        except Exception as upload_err:
+            logger.error(f"Ollama blob upload failed: {upload_err}")
+            return jsonify({
+                "status": "error",
+                "message": f"Ollama blob upload failed: {upload_err}"
+            }), 502
+
+        payload = {
+            "model": ollama_model_name,
+            "files": {gguf_path.name: blob_ref},
+            "stream": False
+        }
+        try:
+            response = requests.post(
+                f"{ollama_base}/api/create",
+                json=payload,
+                timeout=600
+            )
+        except requests.RequestException as req_err:
+            logger.error(f"Ollama request failed for {ollama_base}: {req_err}")
+            return jsonify({
+                "status": "error",
+                "message": f"Ollama request failed: {req_err}"
+            }), 502
+
+        try:
+            response_data = response.json()
+        except ValueError:
+            response_data = {"raw": response.text}
+
+        if not response.ok:
+            logger.error(
+                "Ollama create failed: "
+                f"status={response.status_code}, response={response_data}"
+            )
+            detail = response_data.get("error") if isinstance(response_data, dict) else response_data
+            if detail is None and isinstance(response_data, dict):
+                detail = response_data.get("message") or response_data.get("raw")
+            modelfile_payload = {
+                "model": ollama_model_name,
+                "modelfile": f"FROM {gguf_path.as_posix()}",
+                "stream": False
+            }
+            try:
+                fallback_response = requests.post(
+                    f"{ollama_base}/api/create",
+                    json=modelfile_payload,
+                    timeout=600
+                )
+                try:
+                    fallback_data = fallback_response.json()
+                except ValueError:
+                    fallback_data = {"raw": fallback_response.text}
+
+                if fallback_response.ok:
+                    return jsonify({
+                        "status": "success",
+                        "message": "Model deployed to Ollama",
+                        "ollama_response": fallback_data
+                    })
+
+                logger.error(
+                    "Ollama create fallback failed: "
+                    f"status={fallback_response.status_code}, response={fallback_data}"
+                )
+            except requests.RequestException as fallback_err:
+                logger.error(f"Ollama modelfile fallback failed: {fallback_err}")
+
+            return jsonify({
+                "status": "error",
+                "message": f"Ollama create failed ({response.status_code})",
+                "details": detail,
+                "ollama_response": response_data
+            }), 502
+
+        return jsonify({
+            "status": "success",
+            "message": "Model deployed to Ollama",
+            "ollama_response": response_data
+        })
+    except Exception as e:
+        logger.error(f"Error deploying to Ollama: {str(e)}")
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 @bp.route('/cancel-training', methods=['POST'])
 def cancel_training():
